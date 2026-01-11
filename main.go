@@ -14,6 +14,7 @@ import (
 	"regexp"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/bogem/id3v2"
@@ -134,7 +135,9 @@ type state int
 const (
 	stateLoading state = iota
 	stateSearchResults
+	statePreviewPodcast
 	stateSelecting
+	statePreviewEpisode
 	stateDownloading
 	stateDone
 	stateError
@@ -223,9 +226,13 @@ func initialModel(input string, baseDir string, provider SearchProvider) model {
 		m.loadingMsg = "Looking up podcast..."
 	} else {
 		m.searchQuery = input
-		providerName := "Apple Podcasts"
+		var providerName string
 		if provider == ProviderPodcastIndex {
 			providerName = "Podcast Index"
+		} else if hasPodcastIndexCredentials() {
+			providerName = "Apple + Podcast Index"
+		} else {
+			providerName = "Apple Podcasts"
 		}
 		m.loadingMsg = fmt.Sprintf("Searching %s...", providerName)
 	}
@@ -236,7 +243,10 @@ func initialModel(input string, baseDir string, provider SearchProvider) model {
 func (m model) Init() tea.Cmd {
 	if m.searchQuery != "" {
 		var searchCmd tea.Cmd
-		if m.searchProvider == ProviderPodcastIndex {
+		// If credentials are available and no specific provider was forced, search both
+		if hasPodcastIndexCredentials() && m.searchProvider == ProviderApple {
+			searchCmd = searchBoth(m.searchQuery)
+		} else if m.searchProvider == ProviderPodcastIndex {
 			searchCmd = searchPodcastIndex(m.searchQuery)
 		} else {
 			searchCmd = searchPodcasts(m.searchQuery)
@@ -258,8 +268,37 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch m.state {
 		case stateSearchResults:
 			return m.handleSearchResultsKeys(msg)
+		case statePreviewPodcast:
+			if msg.String() == "esc" || msg.String() == "b" || msg.String() == "v" {
+				m.state = stateSearchResults
+				return m, nil
+			}
+			if msg.String() == "ctrl+c" || msg.String() == "q" {
+				return m, tea.Quit
+			}
 		case stateSelecting:
 			return m.handleSelectionKeys(msg)
+		case statePreviewEpisode:
+			if msg.String() == "esc" || msg.String() == "b" || msg.String() == "v" {
+				m.state = stateSelecting
+				return m, nil
+			}
+			if msg.String() == "ctrl+c" || msg.String() == "q" {
+				return m, tea.Quit
+			}
+		case stateDownloading:
+			if msg.String() == "esc" || msg.String() == "b" {
+				// Go back to episode selection
+				m.state = stateSelecting
+				m.downloadIndex = 0
+				m.downloadTotal = 0
+				m.percent = 0
+				m.downloaded = nil
+				return m, nil
+			}
+			if msg.String() == "ctrl+c" || msg.String() == "q" {
+				return m, tea.Quit
+			}
 		case stateDone, stateError:
 			if msg.String() == "q" || msg.String() == "ctrl+c" || msg.String() == "enter" {
 				return m, tea.Quit
@@ -372,6 +411,12 @@ func (m model) handleSearchResultsKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			result := m.searchResults[m.cursor]
 			return m, func() tea.Msg { return selectSearchResultMsg{result: result} }
 		}
+
+	case "v":
+		if m.cursor < len(m.searchResults) {
+			m.state = statePreviewPodcast
+			return m, nil
+		}
 	}
 
 	return m, nil
@@ -385,6 +430,17 @@ func (m model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	switch msg.String() {
 	case "ctrl+c", "q":
+		return m, tea.Quit
+
+	case "esc", "b":
+		// Go back to search results if available
+		if len(m.searchResults) > 0 {
+			m.state = stateSearchResults
+			m.cursor = 0
+			m.offset = 0
+			return m, nil
+		}
+		// If no search results (direct podcast ID), quit
 		return m, tea.Quit
 
 	case "up", "k":
@@ -445,6 +501,12 @@ func (m model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			os.MkdirAll(m.outputDir, 0755)
 			return m, func() tea.Msg { return startDownloadMsg{} }
 		}
+
+	case "v":
+		if m.cursor < len(m.episodes) {
+			m.state = statePreviewEpisode
+			return m, nil
+		}
 	}
 
 	return m, nil
@@ -493,8 +555,12 @@ func (m model) View() string {
 		return m.viewLoading()
 	case stateSearchResults:
 		return m.viewSearchResults()
+	case statePreviewPodcast:
+		return m.viewPreviewPodcast()
 	case stateSelecting:
 		return m.viewSelecting()
+	case statePreviewEpisode:
+		return m.viewPreviewEpisode()
 	case stateDownloading:
 		return m.viewDownloading()
 	case stateDone:
@@ -566,7 +632,37 @@ func (m model) viewSearchResults() string {
 	}
 
 	// Help
-	b.WriteString(helpStyle.Render("\n\n  ↑/↓ navigate • enter select • q quit"))
+	b.WriteString(helpStyle.Render("\n\n  ↑/↓ navigate • enter select • v preview • q quit"))
+
+	return b.String()
+}
+
+func (m model) viewPreviewPodcast() string {
+	var b strings.Builder
+
+	if m.cursor >= len(m.searchResults) {
+		return ""
+	}
+	result := m.searchResults[m.cursor]
+
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("Podcast Details"))
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Name:"), result.Name))
+	b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Artist:"), result.Artist))
+	b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Source:"), string(result.Source)))
+	if result.ID != "" {
+		b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("ID:"), result.ID))
+	}
+	if result.FeedURL != "" {
+		b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Feed URL:"), result.FeedURL))
+	}
+	if result.ArtworkURL != "" {
+		b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Artwork:"), result.ArtworkURL))
+	}
+
+	b.WriteString(helpStyle.Render("\n\n  esc/b/v back • q quit"))
 
 	return b.String()
 }
@@ -651,7 +747,64 @@ func (m model) viewSelecting() string {
 	b.WriteString(dimStyle.Render(fmt.Sprintf("  •  %d selected", selectedCount)))
 
 	// Help
-	b.WriteString(helpStyle.Render("\n\n  ↑/↓ navigate • space select • a toggle all • enter download • q quit"))
+	b.WriteString(helpStyle.Render("\n\n  ↑/↓ navigate • space select • a toggle all • v preview • enter download • esc/b back • q quit"))
+
+	return b.String()
+}
+
+func (m model) viewPreviewEpisode() string {
+	var b strings.Builder
+
+	if m.cursor >= len(m.episodes) {
+		return ""
+	}
+	ep := m.episodes[m.cursor]
+
+	b.WriteString("\n")
+	b.WriteString(titleStyle.Render("Episode Details"))
+	b.WriteString("\n\n")
+
+	b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Title:"), ep.Title))
+	b.WriteString(fmt.Sprintf("  %s %d\n", subtitleStyle.Render("Episode #:"), ep.Index))
+	if !ep.PubDate.IsZero() {
+		b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Published:"), ep.PubDate.Format("January 2, 2006")))
+	}
+	if ep.Duration != "" {
+		b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Duration:"), ep.Duration))
+	}
+	if ep.AudioURL != "" {
+		b.WriteString(fmt.Sprintf("  %s %s\n", subtitleStyle.Render("Audio URL:"), ep.AudioURL))
+	}
+
+	// Description with word wrap
+	if ep.Description != "" {
+		b.WriteString(fmt.Sprintf("\n  %s\n", subtitleStyle.Render("Description:")))
+		desc := ep.Description
+		// Limit description length for display
+		if len(desc) > 500 {
+			desc = desc[:497] + "..."
+		}
+		// Simple word wrap at ~70 chars
+		words := strings.Fields(desc)
+		line := "  "
+		for _, word := range words {
+			if len(line)+len(word)+1 > 72 {
+				b.WriteString(line + "\n")
+				line = "  " + word
+			} else {
+				if line == "  " {
+					line += word
+				} else {
+					line += " " + word
+				}
+			}
+		}
+		if line != "  " {
+			b.WriteString(line + "\n")
+		}
+	}
+
+	b.WriteString(helpStyle.Render("\n\n  esc/b/v back • q quit"))
 
 	return b.String()
 }
@@ -678,6 +831,8 @@ func (m model) viewDownloading() string {
 	if len(m.downloaded) > 0 {
 		b.WriteString(dimStyle.Render(fmt.Sprintf("\n  ✓ %d completed", len(m.downloaded))))
 	}
+
+	b.WriteString(helpStyle.Render("\n\n  esc/b back • q quit"))
 
 	return b.String()
 }
@@ -992,6 +1147,159 @@ func searchPodcastIndex(query string) tea.Cmd {
 		}
 
 		return searchResultsMsg{results: results}
+	}
+}
+
+// hasPodcastIndexCredentials checks if Podcast Index API credentials are set
+func hasPodcastIndexCredentials() bool {
+	apiKey := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_KEY"))
+	apiSecret := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_SECRET"))
+	return apiKey != "" && apiSecret != ""
+}
+
+// searchAppleResults performs Apple search and returns results directly (for use in combined search)
+func searchAppleResults(query string) ([]SearchResult, error) {
+	encodedQuery := strings.ReplaceAll(query, " ", "+")
+	url := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=25", encodedQuery)
+
+	resp, err := http.Get(url)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	var result iTunesResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var results []SearchResult
+	for _, r := range result.Results {
+		if r.FeedURL == "" {
+			continue
+		}
+		results = append(results, SearchResult{
+			ID:         strconv.Itoa(r.CollectionID),
+			Name:       r.CollectionName,
+			Artist:     r.ArtistName,
+			FeedURL:    r.FeedURL,
+			ArtworkURL: r.ArtworkURL600,
+			Source:     ProviderApple,
+		})
+	}
+	return results, nil
+}
+
+// searchPodcastIndexResults performs Podcast Index search and returns results directly (for use in combined search)
+func searchPodcastIndexResults(query string) ([]SearchResult, error) {
+	apiKey := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_KEY"))
+	apiSecret := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_SECRET"))
+
+	apiHeaderTime := strconv.FormatInt(time.Now().Unix(), 10)
+	hashInput := apiKey + apiSecret + apiHeaderTime
+	h := sha1.New()
+	h.Write([]byte(hashInput))
+	authHash := hex.EncodeToString(h.Sum(nil))
+
+	encodedQuery := url.QueryEscape(query)
+	apiURL := fmt.Sprintf("https://api.podcastindex.org/api/1.0/search/byterm?q=%s&max=25", encodedQuery)
+
+	req, err := http.NewRequest("GET", apiURL, nil)
+	if err != nil {
+		return nil, err
+	}
+
+	req.Header.Set("User-Agent", "PodcastDownload/1.0")
+	req.Header.Set("X-Auth-Key", apiKey)
+	req.Header.Set("X-Auth-Date", apiHeaderTime)
+	req.Header.Set("Authorization", authHash)
+
+	client := &http.Client{Timeout: 30 * time.Second}
+	resp, err := client.Do(req)
+	if err != nil {
+		return nil, err
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		body, _ := io.ReadAll(resp.Body)
+		return nil, fmt.Errorf("API error (%d): %s", resp.StatusCode, string(body))
+	}
+
+	var result podcastIndexResponse
+	if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+		return nil, err
+	}
+
+	var results []SearchResult
+	for _, feed := range result.Feeds {
+		if feed.URL == "" {
+			continue
+		}
+		results = append(results, SearchResult{
+			ID:         strconv.Itoa(feed.ID),
+			Name:       feed.Title,
+			Artist:     feed.Author,
+			FeedURL:    feed.URL,
+			ArtworkURL: feed.Image,
+			Source:     ProviderPodcastIndex,
+		})
+	}
+	return results, nil
+}
+
+// searchBoth searches both Apple and Podcast Index APIs concurrently and combines results
+func searchBoth(query string) tea.Cmd {
+	return func() tea.Msg {
+		var wg sync.WaitGroup
+		var appleResults, piResults []SearchResult
+		var appleErr, piErr error
+
+		wg.Add(2)
+
+		// Search Apple
+		go func() {
+			defer wg.Done()
+			appleResults, appleErr = searchAppleResults(query)
+		}()
+
+		// Search Podcast Index
+		go func() {
+			defer wg.Done()
+			piResults, piErr = searchPodcastIndexResults(query)
+		}()
+
+		wg.Wait()
+
+		// If both failed, return error
+		if appleErr != nil && piErr != nil {
+			return errorMsg{err: fmt.Errorf("search failed: Apple: %v, Podcast Index: %v", appleErr, piErr)}
+		}
+
+		// Combine results - Apple first, then Podcast Index (deduplicated by feed URL)
+		var combined []SearchResult
+		seenFeedURLs := make(map[string]bool)
+
+		if appleErr == nil {
+			for _, r := range appleResults {
+				normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
+				if !seenFeedURLs[normalizedURL] {
+					seenFeedURLs[normalizedURL] = true
+					combined = append(combined, r)
+				}
+			}
+		}
+		if piErr == nil {
+			for _, r := range piResults {
+				normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
+				if !seenFeedURLs[normalizedURL] {
+					seenFeedURLs[normalizedURL] = true
+					combined = append(combined, r)
+				}
+			}
+		}
+
+		return searchResultsMsg{results: combined}
 	}
 }
 

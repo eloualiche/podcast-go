@@ -13,8 +13,11 @@
 
 - **Search by name**: Search for any podcast by name using Apple's podcast directory
 - **Podcast Index support**: Search podcasts not in Apple's index (e.g., Radio France, European podcasts)
+- **Unified search**: Automatically searches both Apple and Podcast Index when credentials are configured (with deduplication)
 - **Lookup by ID**: Direct lookup using Apple Podcast ID for faster access
 - **Interactive selection**: Browse and select specific episodes to download
+- **Preview metadata**: View detailed podcast/episode metadata before downloading
+- **Back navigation**: Navigate back through screens without restarting
 - **Batch downloads**: Select multiple episodes at once with visual progress tracking
 - **ID3 tagging**: Automatically writes ID3v2 tags (title, artist, album, track number)
 - **Smart file naming**: Episodes are saved with track numbers for proper ordering
@@ -107,13 +110,18 @@ export PODCASTINDEX_API_SECRET='your_api_secret'
 
 #### Usage
 
+When Podcast Index credentials are configured, searches automatically query **both** Apple and Podcast Index, with duplicate results removed:
+
 ```bash
-# Search Podcast Index
+# Unified search (searches both Apple + Podcast Index automatically)
+./podcastdownload "france inter"
+
+# Force search only Podcast Index
 ./podcastdownload --index podcastindex "france inter"
 ./podcastdownload --index pi "radio france"  # shorthand
 
-# Search for European podcasts not on Apple
-./podcastdownload --index podcastindex "arte radio"
+# Force search only Apple
+./podcastdownload --index apple "the daily"
 ```
 
 ### Finding a Podcast ID
@@ -162,7 +170,7 @@ by The New York Times • 2847 episodes
 
   Showing 1-20 of 2847  •  2 selected
 
-  ↑/↓ navigate • space select • a toggle all • enter download • q quit
+  ↑/↓ navigate • space select • a toggle all • v preview • enter download • esc/b back • q quit
 ```
 
 ### 3. Download
@@ -206,6 +214,7 @@ Each file includes ID3 tags:
 | `↑` / `k` | Move cursor up |
 | `↓` / `j` | Move cursor down |
 | `Enter` | Select podcast |
+| `v` | Preview podcast metadata |
 | `q` / `Ctrl+C` | Quit |
 
 ### Episode Selection Screen
@@ -218,15 +227,24 @@ Each file includes ID3 tags:
 | `a` | Select/deselect all episodes |
 | `PgUp` | Page up |
 | `PgDn` | Page down |
+| `v` | Preview episode metadata |
 | `Enter` | Start downloading selected |
+| `Esc` / `b` | Go back to search results |
 | `q` / `Ctrl+C` | Quit |
 
-### Download/Complete Screen
+### Download Screen
 
 | Key | Action |
 |-----|--------|
-| `Enter` / `q` | Exit (when complete) |
-| `Ctrl+C` | Cancel download |
+| `Esc` / `b` | Go back to episode selection |
+| `q` / `Ctrl+C` | Cancel and quit |
+
+### Complete/Error Screen
+
+| Key | Action |
+|-----|--------|
+| `Enter` / `q` | Exit |
+| `Ctrl+C` | Exit |
 
 ## Build Commands
 
