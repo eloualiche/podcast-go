@@ -1,6 +1,13 @@
-# Podcast Downloader
+<div align="center">
 
-A TUI (Terminal User Interface) application for downloading podcast episodes from Apple Podcasts. Built with Go and the Charm libraries for a beautiful terminal experience.
+# Podcast Downloader
+### Vibe coded Go TUI for downloading your favorites
+
+<img src="./media/demo-podcastdownload.gif" width="800" alt="Demo of the TUI">
+
+</div>
+
+---
 
 ## Features
 

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"flag"
 	"fmt"
 	"io"
 	"net/http"
@@ -131,6 +132,7 @@ type model struct {
 	downloadIndex int
 	downloadTotal int
 	outputDir     string
+	baseDir       string
 	downloaded    []string
 	percent       float64
 }
@@ -171,14 +173,13 @@ func isNumeric(s string) bool {
 	return len(s) > 0
 }
 
-func initialModel(input string) model {
+func initialModel(input string, baseDir string) model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
 
 	p := progress.New(progress.WithDefaultGradient())
 
-	// Determine if input is a podcast ID or search query
 	isID := isNumeric(input)
 
 	m := model{
@@ -186,6 +187,7 @@ func initialModel(input string) model {
 		spinner:      s,
 		progress:     p,
 		windowHeight: 24,
+		baseDir:      baseDir, 
 	}
 
 	if isID {
@@ -396,7 +398,8 @@ func (m model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateDownloading
 			m.downloadTotal = len(selected)
 			m.downloadIndex = 0
-			m.outputDir = sanitizeFilename(m.podcastInfo.Name)
+			podcastFolder := sanitizeFilename(m.podcastInfo.Name)
+			m.outputDir = filepath.Join(m.baseDir, podcastFolder)
 			os.MkdirAll(m.outputDir, 0755)
 			return m, func() tea.Msg { return startDownloadMsg{} }
 		}
@@ -881,24 +884,32 @@ func searchPodcasts(query string) tea.Cmd {
 }
 
 func main() {
-	if len(os.Args) < 2 {
-		fmt.Println("Podcast Downloader")
-		fmt.Println()
-		fmt.Println("Usage: podcastdownload <podcast_id_or_search_query>")
-		fmt.Println()
-		fmt.Println("Examples:")
-		fmt.Println("  podcastdownload 1200361736       # Download by Apple Podcast ID")
-		fmt.Println("  podcastdownload \"the daily\"      # Search for podcasts by name")
-		fmt.Println()
-		fmt.Println("Find the ID in the Apple Podcasts URL:")
-		fmt.Println("  https://podcasts.apple.com/us/podcast/the-daily/id1200361736")
-		fmt.Println("                                              ^^^^^^^^^^")
+	// Define the -o flag. Defaults to "." (current directory)
+	baseDir := flag.String("o", ".", "Base directory where the podcast folder will be created")
+	
+	// Custom usage message
+	flag.Usage = func() {
+		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <podcast_id_or_search_query>\n\n", os.Args[0])
+		fmt.Println("Flags:")
+		flag.PrintDefaults()
+		fmt.Println("\nExamples:")
+		fmt.Println("  podcastdownload -o ~/Music \"the daily\"")
+		fmt.Println("  podcastdownload 1200361736")
+	}
+
+	flag.Parse()
+
+	// Check if we have arguments left after parsing flags (the search query)
+	if flag.NArg() < 1 {
+		flag.Usage()
 		os.Exit(1)
 	}
 
-	input := strings.Join(os.Args[1:], " ")
+	// Join remaining arguments to form the search query
+	input := strings.Join(flag.Args(), " ")
 
-	program = tea.NewProgram(initialModel(input), tea.WithAltScreen())
+	// Pass the baseDir to initialModel
+	program = tea.NewProgram(initialModel(input, *baseDir), tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)
