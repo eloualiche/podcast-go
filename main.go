@@ -1,11 +1,14 @@
 package main
 
 import (
+	"crypto/sha1"
+	"encoding/hex"
 	"encoding/json"
 	"flag"
 	"fmt"
 	"io"
 	"net/http"
+	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -76,6 +79,7 @@ type SearchResult struct {
 	Artist     string
 	FeedURL    string
 	ArtworkURL string
+	Source     SearchProvider // which index this result came from
 }
 
 // Episode holds episode data from RSS feed
@@ -102,6 +106,28 @@ type iTunesResponse struct {
 	} `json:"results"`
 }
 
+// podcastIndexResponse represents Podcast Index API search response
+type podcastIndexResponse struct {
+	Status string `json:"status"`
+	Feeds  []struct {
+		ID          int    `json:"id"`
+		Title       string `json:"title"`
+		Author      string `json:"author"`
+		URL         string `json:"url"`
+		Image       string `json:"image"`
+		Description string `json:"description"`
+	} `json:"feeds"`
+	Count int `json:"count"`
+}
+
+// SearchProvider indicates which podcast index to use
+type SearchProvider string
+
+const (
+	ProviderApple        SearchProvider = "apple"
+	ProviderPodcastIndex SearchProvider = "podcastindex"
+)
+
 // App states
 type state int
 
@@ -116,25 +142,26 @@ const (
 
 // Model is our Bubble Tea model
 type model struct {
-	state         state
-	podcastID     string
-	searchQuery   string
-	searchResults []SearchResult
-	podcastInfo   PodcastInfo
-	episodes      []Episode
-	cursor        int
-	offset        int
-	windowHeight  int
-	spinner       spinner.Model
-	progress      progress.Model
-	loadingMsg    string
-	errorMsg      string
-	downloadIndex int
-	downloadTotal int
-	outputDir     string
-	baseDir       string
-	downloaded    []string
-	percent       float64
+	state          state
+	podcastID      string
+	searchQuery    string
+	searchResults  []SearchResult
+	podcastInfo    PodcastInfo
+	episodes       []Episode
+	cursor         int
+	offset         int
+	windowHeight   int
+	spinner        spinner.Model
+	progress       progress.Model
+	loadingMsg     string
+	errorMsg       string
+	downloadIndex  int
+	downloadTotal  int
+	outputDir      string
+	baseDir        string
+	downloaded     []string
+	percent        float64
+	searchProvider SearchProvider
 }
 
 // Messages
@@ -173,7 +200,7 @@ func isNumeric(s string) bool {
 	return len(s) > 0
 }
 
-func initialModel(input string, baseDir string) model {
+func initialModel(input string, baseDir string, provider SearchProvider) model {
 	s := spinner.New()
 	s.Spinner = spinner.Dot
 	s.Style = lipgloss.NewStyle().Foreground(lipgloss.Color("205"))
@@ -183,11 +210,12 @@ func initialModel(input string, baseDir string) model {
 	isID := isNumeric(input)
 
 	m := model{
-		state:        stateLoading,
-		spinner:      s,
-		progress:     p,
-		windowHeight: 24,
-		baseDir:      baseDir, 
+		state:          stateLoading,
+		spinner:        s,
+		progress:       p,
+		windowHeight:   24,
+		baseDir:        baseDir,
+		searchProvider: provider,
 	}
 
 	if isID {
@@ -195,7 +223,11 @@ func initialModel(input string, baseDir string) model {
 		m.loadingMsg = "Looking up podcast..."
 	} else {
 		m.searchQuery = input
-		m.loadingMsg = "Searching podcasts..."
+		providerName := "Apple Podcasts"
+		if provider == ProviderPodcastIndex {
+			providerName = "Podcast Index"
+		}
+		m.loadingMsg = fmt.Sprintf("Searching %s...", providerName)
 	}
 
 	return m
@@ -203,9 +235,15 @@ func initialModel(input string, baseDir string) model {
 
 func (m model) Init() tea.Cmd {
 	if m.searchQuery != "" {
+		var searchCmd tea.Cmd
+		if m.searchProvider == ProviderPodcastIndex {
+			searchCmd = searchPodcastIndex(m.searchQuery)
+		} else {
+			searchCmd = searchPodcasts(m.searchQuery)
+		}
 		return tea.Batch(
 			m.spinner.Tick,
-			searchPodcasts(m.searchQuery),
+			searchCmd,
 		)
 	}
 	return tea.Batch(
@@ -256,6 +294,10 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case selectSearchResultMsg:
 		m.state = stateLoading
 		m.loadingMsg = fmt.Sprintf("Loading %s...", msg.result.Name)
+		if msg.result.Source == ProviderPodcastIndex {
+			// Load directly from RSS feed URL for Podcast Index results
+			return m, loadPodcastFromFeed(msg.result.FeedURL, msg.result.Name, msg.result.Artist, msg.result.ArtworkURL)
+		}
 		m.podcastID = msg.result.ID
 		return m, loadPodcast(msg.result.ID)
 
@@ -876,6 +918,7 @@ func searchPodcasts(query string) tea.Cmd {
 				Artist:     r.ArtistName,
 				FeedURL:    r.FeedURL,
 				ArtworkURL: r.ArtworkURL600,
+				Source:     ProviderApple,
 			})
 		}
 
@@ -883,21 +926,178 @@ func searchPodcasts(query string) tea.Cmd {
 	}
 }
 
+// searchPodcastIndex searches using Podcast Index API
+func searchPodcastIndex(query string) tea.Cmd {
+	return func() tea.Msg {
+		apiKey := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_KEY"))
+		apiSecret := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_SECRET"))
+
+		if apiKey == "" || apiSecret == "" {
+			return errorMsg{err: fmt.Errorf("Podcast Index API credentials not set.\nSet PODCASTINDEX_API_KEY and PODCASTINDEX_API_SECRET environment variables.\nGet free API keys at: https://api.podcastindex.org")}
+		}
+
+		// Build authentication headers (hash = sha1(apiKey + apiSecret + unixTime))
+		apiHeaderTime := strconv.FormatInt(time.Now().Unix(), 10)
+		hashInput := apiKey + apiSecret + apiHeaderTime
+		h := sha1.New()
+		h.Write([]byte(hashInput))
+		authHash := hex.EncodeToString(h.Sum(nil))
+
+		// URL encode the query
+		encodedQuery := url.QueryEscape(query)
+		apiURL := fmt.Sprintf("https://api.podcastindex.org/api/1.0/search/byterm?q=%s&max=25", encodedQuery)
+
+		req, err := http.NewRequest("GET", apiURL, nil)
+		if err != nil {
+			return errorMsg{err: fmt.Errorf("failed to create request: %w", err)}
+		}
+
+		// Set required headers
+		req.Header.Set("User-Agent", "PodcastDownload/1.0")
+		req.Header.Set("X-Auth-Key", apiKey)
+		req.Header.Set("X-Auth-Date", apiHeaderTime)
+		req.Header.Set("Authorization", authHash)
+
+		client := &http.Client{Timeout: 30 * time.Second}
+		resp, err := client.Do(req)
+		if err != nil {
+			return errorMsg{err: fmt.Errorf("failed to search Podcast Index: %w", err)}
+		}
+		defer resp.Body.Close()
+
+		if resp.StatusCode != http.StatusOK {
+			body, _ := io.ReadAll(resp.Body)
+			return errorMsg{err: fmt.Errorf("Podcast Index API error (%d): %s", resp.StatusCode, string(body))}
+		}
+
+		var result podcastIndexResponse
+		if err := json.NewDecoder(resp.Body).Decode(&result); err != nil {
+			return errorMsg{err: fmt.Errorf("failed to parse search results: %w", err)}
+		}
+
+		var results []SearchResult
+		for _, feed := range result.Feeds {
+			if feed.URL == "" {
+				continue
+			}
+
+			results = append(results, SearchResult{
+				ID:         strconv.Itoa(feed.ID),
+				Name:       feed.Title,
+				Artist:     feed.Author,
+				FeedURL:    feed.URL,
+				ArtworkURL: feed.Image,
+				Source:     ProviderPodcastIndex,
+			})
+		}
+
+		return searchResultsMsg{results: results}
+	}
+}
+
+// loadPodcastFromFeed loads a podcast directly from its RSS feed URL
+func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) tea.Cmd {
+	return func() tea.Msg {
+		info := PodcastInfo{
+			Name:       name,
+			Artist:     artist,
+			FeedURL:    feedURL,
+			ArtworkURL: artworkURL,
+		}
+
+		// Parse RSS feed
+		fp := gofeed.NewParser()
+		feed, err := fp.ParseURL(feedURL)
+		if err != nil {
+			return errorMsg{err: fmt.Errorf("failed to parse RSS feed: %w", err)}
+		}
+
+		// Use feed title/author if not provided
+		if info.Name == "" && feed.Title != "" {
+			info.Name = feed.Title
+		}
+		if info.Artist == "" && feed.Author != nil {
+			info.Artist = feed.Author.Name
+		}
+		if info.ArtworkURL == "" && feed.Image != nil {
+			info.ArtworkURL = feed.Image.URL
+		}
+
+		var episodes []Episode
+		for i, item := range feed.Items {
+			audioURL := ""
+
+			// Find audio enclosure
+			for _, enc := range item.Enclosures {
+				if strings.Contains(enc.Type, "audio") || strings.HasSuffix(enc.URL, ".mp3") {
+					audioURL = enc.URL
+					break
+				}
+			}
+
+			if audioURL == "" {
+				continue
+			}
+
+			var pubDate time.Time
+			if item.PublishedParsed != nil {
+				pubDate = *item.PublishedParsed
+			}
+
+			duration := ""
+			if item.ITunesExt != nil {
+				duration = item.ITunesExt.Duration
+			}
+
+			episodes = append(episodes, Episode{
+				Index:       i + 1,
+				Title:       item.Title,
+				Description: item.Description,
+				AudioURL:    audioURL,
+				PubDate:     pubDate,
+				Duration:    duration,
+			})
+		}
+
+		if len(episodes) == 0 {
+			return errorMsg{err: fmt.Errorf("no downloadable episodes found")}
+		}
+
+		return podcastLoadedMsg{info: info, episodes: episodes}
+	}
+}
+
 func main() {
-	// Define the -o flag. Defaults to "." (current directory)
+	// Define flags
 	baseDir := flag.String("o", ".", "Base directory where the podcast folder will be created")
-	
+	indexFlag := flag.String("index", "apple", "Search provider: 'apple' (default) or 'podcastindex'")
+
 	// Custom usage message
 	flag.Usage = func() {
 		fmt.Fprintf(os.Stderr, "Usage: %s [flags] <podcast_id_or_search_query>\n\n", os.Args[0])
-		fmt.Println("Flags:")
+		fmt.Fprintln(os.Stderr, "Flags:")
 		flag.PrintDefaults()
-		fmt.Println("\nExamples:")
-		fmt.Println("  podcastdownload -o ~/Music \"the daily\"")
-		fmt.Println("  podcastdownload 1200361736")
+		fmt.Fprintln(os.Stderr, "\nExamples:")
+		fmt.Fprintln(os.Stderr, "  podcastdownload -o ~/Music \"the daily\"")
+		fmt.Fprintln(os.Stderr, "  podcastdownload 1200361736")
+		fmt.Fprintln(os.Stderr, "  podcastdownload --index podcastindex \"france inter\"")
+		fmt.Fprintln(os.Stderr, "\nPodcast Index:")
+		fmt.Fprintln(os.Stderr, "  To use Podcast Index, set these environment variables:")
+		fmt.Fprintln(os.Stderr, "    PODCASTINDEX_API_KEY=your_key")
+		fmt.Fprintln(os.Stderr, "    PODCASTINDEX_API_SECRET=your_secret")
+		fmt.Fprintln(os.Stderr, "  Get free API keys at: https://api.podcastindex.org")
 	}
 
 	flag.Parse()
+
+	// Parse the index flag
+	var provider SearchProvider
+	switch strings.ToLower(*indexFlag) {
+	case "podcastindex", "pi":
+		provider = ProviderPodcastIndex
+	default:
+		provider = ProviderApple
+	}
 
 	// Check if we have arguments left after parsing flags (the search query)
 	if flag.NArg() < 1 {
@@ -908,8 +1108,8 @@ func main() {
 	// Join remaining arguments to form the search query
 	input := strings.Join(flag.Args(), " ")
 
-	// Pass the baseDir to initialModel
-	program = tea.NewProgram(initialModel(input, *baseDir), tea.WithAltScreen())
+	// Pass the baseDir and provider to initialModel
+	program = tea.NewProgram(initialModel(input, *baseDir, provider), tea.WithAltScreen())
 	if _, err := program.Run(); err != nil {
 		fmt.Printf("Error: %v\n", err)
 		os.Exit(1)

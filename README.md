@@ -12,6 +12,7 @@
 ## Features
 
 - **Search by name**: Search for any podcast by name using Apple's podcast directory
+- **Podcast Index support**: Search podcasts not in Apple's index (e.g., Radio France, European podcasts)
 - **Lookup by ID**: Direct lookup using Apple Podcast ID for faster access
 - **Interactive selection**: Browse and select specific episodes to download
 - **Batch downloads**: Select multiple episodes at once with visual progress tracking
@@ -66,7 +67,7 @@ sudo mv podcastdownload /usr/local/bin/
 ### Basic Commands
 
 ```bash
-# Search for a podcast by name
+# Search for a podcast by name (uses Apple Podcasts by default)
 ./podcastdownload "the daily"
 
 # Search with multiple words
@@ -74,6 +75,45 @@ sudo mv podcastdownload /usr/local/bin/
 
 # Lookup by Apple Podcast ID (faster, no search step)
 ./podcastdownload 1200361736
+
+# Specify output directory
+./podcastdownload -o ~/Music "the daily"
+```
+
+### Using Podcast Index
+
+Some podcasts (like Radio France, many European podcasts) are not indexed by Apple Podcasts. You can search these using [Podcast Index](https://podcastindex.org/), an open podcast directory with over 4 million podcasts.
+
+#### Setup
+
+1. Get free API credentials at https://api.podcastindex.org (instant, no approval needed)
+
+2. Set environment variables (**use single quotes** to preserve special characters):
+
+```bash
+export PODCASTINDEX_API_KEY='your_api_key'
+export PODCASTINDEX_API_SECRET='your_api_secret'
+```
+
+> **Important**: Many API secrets contain `$` characters. Using double quotes will cause the shell to interpret `$` as a variable, breaking authentication. Always use single quotes.
+
+3. Add to your shell profile (`~/.bashrc`, `~/.zshrc`, etc.) to persist:
+
+```bash
+# Podcast Index API credentials
+export PODCASTINDEX_API_KEY='your_api_key'
+export PODCASTINDEX_API_SECRET='your_api_secret'
+```
+
+#### Usage
+
+```bash
+# Search Podcast Index
+./podcastdownload --index podcastindex "france inter"
+./podcastdownload --index pi "radio france"  # shorthand
+
+# Search for European podcasts not on Apple
+./podcastdownload --index podcastindex "arte radio"
 ```
 
 ### Finding a Podcast ID
@@ -212,10 +252,17 @@ Or use `just --list` to see all available commands.
 
 ## How It Works
 
-1. **Search/Lookup**: Uses Apple's iTunes Search API to find podcasts
+1. **Search/Lookup**: Uses Apple's iTunes Search API or Podcast Index API to find podcasts
 2. **Feed Parsing**: Fetches and parses the podcast's RSS feed using gofeed
 3. **Download**: Downloads MP3 files from the enclosure URLs in the RSS feed
 4. **Tagging**: Writes ID3v2 tags to each downloaded file
+
+### Search Providers
+
+| Provider | Flag | Coverage | Notes |
+|----------|------|----------|-------|
+| Apple Podcasts | `--index apple` (default) | Large, US-centric | No API key needed |
+| Podcast Index | `--index podcastindex` | 4M+ podcasts, open | Free API key required |
 
 ## Troubleshooting
 
@@ -230,6 +277,37 @@ The podcast's RSS feed doesn't contain audio enclosures, or uses a format not re
 ### Download seems stuck
 
 Some podcast CDNs may be slow. The progress bar updates every 1% of download progress. For large files on slow connections, this may take a moment.
+
+### Podcast Index: "Authorization header doesn't match"
+
+This usually means your API secret contains special characters that got mangled. Check:
+
+1. **Use single quotes** when setting environment variables:
+   ```bash
+   # Wrong - $ gets interpreted as variable
+   export PODCASTINDEX_API_SECRET="secret$with$dollars"
+
+   # Correct - single quotes preserve literal value
+   export PODCASTINDEX_API_SECRET='secret$with$dollars'
+   ```
+
+2. **Verify your credentials** are set correctly:
+   ```bash
+   echo "Key: [$PODCASTINDEX_API_KEY]"
+   echo "Secret: [$PODCASTINDEX_API_SECRET]"
+   ```
+
+3. **Check for trailing whitespace** - copy credentials carefully from the email.
+
+### Podcast Index: "API credentials not set"
+
+Set the environment variables before running:
+```bash
+export PODCASTINDEX_API_KEY='your_key'
+export PODCASTINDEX_API_SECRET='your_secret'
+```
+
+Get free credentials at https://api.podcastindex.org
 
 ## License
 
