@@ -1,0 +1,27 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(uv venv:*)",
+      "Bash(uv pip install:*)",
+      "Bash(git init:*)",
+      "Bash(git add:*)",
+      "Bash(ocamlfind list:*)",
+      "Bash(opam show:*)",
+      "Bash(opam reinstall:*)",
+      "Bash(dune build:*)",
+      "Bash(cat:*)",
+      "Bash(dune clean:*)",
+      "Bash(opam config:*)",
+      "Bash(dune describe:*)",
+      "Bash(opam list:*)",
+      "Bash(opam var:*)",
+      "Bash(opam exec -- dune build:*)",
+      "Bash(opam install:*)",
+      "Bash(git commit -m \"$\\(cat <<''EOF''\nAdd OCaml implementation \\(WIP\\) and search TODO for Go\n\nOCaml implementation:\n- Complete CLI podcast downloader in ocaml/bin/main.ml\n- Uses cohttp for HTTP, ezxmlm for RSS parsing, yojson for JSON\n- Includes progress bar and ID3v1 tag writing\n- Currently blocked by ARM64 compilation issue with Jane Street libs\n\nGo changes:\n- Added TODO for podcast search by name feature\n\n🤖 Generated with [Claude Code]\\(https://claude.com/claude-code\\)\n\nCo-Authored-By: Claude Opus 4.5 <noreply@anthropic.com>\nEOF\n\\)\")",
+      "Bash(./podcastdownload)",
+      "Bash(curl:*)",
+      "Bash(git commit:*)",
+      "Bash(opam exec:*)"
+    ]
+  }
+}
