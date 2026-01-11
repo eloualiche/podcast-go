@@ -1,0 +1,5 @@
+# Build output
+podcastdownload
+
+# Claude Code local settings
+.claude/
