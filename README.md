@@ -19,28 +19,39 @@ A TUI (Terminal User Interface) application for downloading podcast episodes fro
 
 ## Installation
 
-### Using just (recommended)
+### Clone from GitHub
 
 ```bash
-# Build the binary
-just build
-
-# Or build and run immediately
-just run
+git clone https://github.com/eloualiche/podcast-go.git
+cd podcast-go
 ```
 
-### Using go directly
+### Build
+
+Using just (recommended):
+
+```bash
+just build
+```
+
+Or using go directly:
 
 ```bash
 go build -o podcastdownload main.go
 ```
 
-### Install dependencies
+### Install globally (optional)
 
-If building from scratch, install Go dependencies:
+To use `podcastdownload` from anywhere:
 
 ```bash
-go mod download
+go install
+```
+
+Or move the binary to your PATH:
+
+```bash
+sudo mv podcastdownload /usr/local/bin/
 ```
 
 ## Usage
