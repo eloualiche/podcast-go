@@ -1,5 +1,6 @@
 # Build output
 podcastdownload
+podcast-gui
 
 # Claude Code local settings
 .claude/
