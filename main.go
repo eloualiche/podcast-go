@@ -11,11 +11,12 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"podcastdownload/internal/podcast"
 
 	"github.com/bogem/id3v2"
 	"github.com/charmbracelet/bubbles/progress"
@@ -193,15 +194,6 @@ type selectSearchResultMsg struct {
 	result SearchResult
 }
 
-// isNumeric checks if a string is all digits (podcast ID)
-func isNumeric(s string) bool {
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return len(s) > 0
-}
 
 func initialModel(input string, baseDir string, provider SearchProvider) model {
 	s := spinner.New()
@@ -210,7 +202,7 @@ func initialModel(input string, baseDir string, provider SearchProvider) model {
 
 	p := progress.New(progress.WithDefaultGradient())
 
-	isID := isNumeric(input)
+	isID := podcast.IsNumeric(input)
 
 	m := model{
 		state:          stateLoading,
@@ -496,7 +488,7 @@ func (m model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateDownloading
 			m.downloadTotal = len(selected)
 			m.downloadIndex = 0
-			podcastFolder := sanitizeFilename(m.podcastInfo.Name)
+			podcastFolder := podcast.SanitizeFilename(m.podcastInfo.Name)
 			m.outputDir = filepath.Join(m.baseDir, podcastFolder)
 			os.MkdirAll(m.outputDir, 0755)
 			return m, func() tea.Msg { return startDownloadMsg{} }
@@ -529,7 +521,7 @@ func (m model) downloadNextCmd() tea.Cmd {
 	}
 
 	ep := selected[m.downloadIndex]
-	currentFile := fmt.Sprintf("%03d - %s.mp3", ep.Index, sanitizeFilename(ep.Title))
+	currentFile := fmt.Sprintf("%03d - %s.mp3", ep.Index, podcast.SanitizeFilename(ep.Title))
 	outputDir := m.outputDir
 	podcastInfo := m.podcastInfo
 
@@ -537,7 +529,11 @@ func (m model) downloadNextCmd() tea.Cmd {
 		filePath := filepath.Join(outputDir, currentFile)
 
 		// Download with progress callback that sends to program
-		err := downloadFileWithProgress(filePath, ep.AudioURL)
+		err := podcast.DownloadFile(filePath, ep.AudioURL, func(percent float64) {
+			if program != nil {
+				program.Send(downloadProgressMsg(percent))
+			}
+		})
 		if err != nil {
 			return errorMsg{err: err}
 		}
@@ -821,7 +817,7 @@ func (m model) viewDownloading() string {
 	selected := m.getSelectedEpisodes()
 	if m.downloadIndex < len(selected) {
 		ep := selected[m.downloadIndex]
-		currentFile = fmt.Sprintf("%03d - %s.mp3", ep.Index, sanitizeFilename(ep.Title))
+		currentFile = fmt.Sprintf("%03d - %s.mp3", ep.Index, podcast.SanitizeFilename(ep.Title))
 	}
 
 	b.WriteString(fmt.Sprintf("  Episode %d of %d\n", m.downloadIndex+1, m.downloadTotal))
@@ -954,56 +950,6 @@ func loadPodcast(podcastID string) tea.Cmd {
 	}
 }
 
-func downloadFileWithProgress(filepath string, url string) error {
-	// Check if already exists
-	if _, err := os.Stat(filepath); err == nil {
-		return nil
-	}
-
-	resp, err := http.Get(url)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	out, err := os.Create(filepath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	totalSize := resp.ContentLength
-	downloaded := int64(0)
-	lastPercent := float64(0)
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-			downloaded += int64(n)
-			if totalSize > 0 {
-				percent := float64(downloaded) / float64(totalSize)
-				// Only send updates every 1% to avoid flooding
-				if percent-lastPercent >= 0.01 || percent >= 1.0 {
-					lastPercent = percent
-					if program != nil {
-						program.Send(downloadProgressMsg(percent))
-					}
-				}
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 func addID3Tags(filepath string, ep Episode, info PodcastInfo) error {
 	tag, err := id3v2.Open(filepath, id3v2.Options{Parse: true})
 	if err != nil {
@@ -1026,22 +972,6 @@ func addID3Tags(filepath string, ep Episode, info PodcastInfo) error {
 	return tag.Save()
 }
 
-func sanitizeFilename(name string) string {
-	// Remove invalid characters
-	re := regexp.MustCompile(`[<>:"/\\|?*]`)
-	name = re.ReplaceAllString(name, "")
-	name = strings.TrimSpace(name)
-
-	// Limit length
-	if len(name) > 100 {
-		name = name[:100]
-	}
-
-	if name == "" {
-		return "episode"
-	}
-	return name
-}
 
 // searchPodcasts searches for podcasts using Apple's Search API
 func searchPodcasts(query string) tea.Cmd {
