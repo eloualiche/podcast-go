@@ -1,7 +1,10 @@
 # Build output
 podcastdownload
+podcast-gui
+podcastdownload
 
 # Claude Code local settings
 .claude/
 .DS_Store
 *.tape
+podcastdownload
