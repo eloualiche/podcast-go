@@ -33,10 +33,13 @@ jobs:
         run: go mod download
 
       - name: Build
-        run: go build -v ./...
+        # Exclude ./cmd/gui — Fyne requires X11/OpenGL system libs not
+        # installed on CI runners. The GUI is being deprecated; CI covers
+        # the CLI (root package) and the shared internal/podcast helpers.
+        run: go build -v . ./internal/...
 
       - name: Test
-        run: go test -v -race -coverprofile=coverage.out ./...
+        run: go test -v -race -coverprofile=coverage.out ./internal/...
 
       - name: Upload coverage
         uses: codecov/codecov-action@v4
