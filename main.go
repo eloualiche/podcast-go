@@ -90,6 +90,7 @@ type Episode struct {
 	Title       string
 	Description string
 	AudioURL    string
+	AudioExt    string // file extension including leading dot, e.g. ".mp3" / ".m4a"
 	PubDate     time.Time
 	Duration    string
 	Selected    bool
@@ -521,7 +522,7 @@ func (m model) downloadNextCmd() tea.Cmd {
 	}
 
 	ep := selected[m.downloadIndex]
-	currentFile := fmt.Sprintf("%03d - %s.mp3", ep.Index, podcast.SanitizeFilename(ep.Title))
+	currentFile := fmt.Sprintf("%03d - %s%s", ep.Index, podcast.SanitizeFilename(ep.Title), episodeExt(ep))
 	outputDir := m.outputDir
 	podcastInfo := m.podcastInfo
 
@@ -817,7 +818,7 @@ func (m model) viewDownloading() string {
 	selected := m.getSelectedEpisodes()
 	if m.downloadIndex < len(selected) {
 		ep := selected[m.downloadIndex]
-		currentFile = fmt.Sprintf("%03d - %s.mp3", ep.Index, podcast.SanitizeFilename(ep.Title))
+		currentFile = fmt.Sprintf("%03d - %s%s", ep.Index, podcast.SanitizeFilename(ep.Title), episodeExt(ep))
 	}
 
 	b.WriteString(fmt.Sprintf("  Episode %d of %d\n", m.downloadIndex+1, m.downloadTotal))
@@ -909,11 +910,13 @@ func loadPodcast(podcastID string) tea.Cmd {
 		var episodes []Episode
 		for i, item := range feed.Items {
 			audioURL := ""
+			audioType := ""
 
 			// Find audio enclosure
 			for _, enc := range item.Enclosures {
 				if strings.Contains(enc.Type, "audio") || strings.HasSuffix(enc.URL, ".mp3") {
 					audioURL = enc.URL
+					audioType = enc.Type
 					break
 				}
 			}
@@ -937,6 +940,7 @@ func loadPodcast(podcastID string) tea.Cmd {
 				Title:       item.Title,
 				Description: item.Description,
 				AudioURL:    audioURL,
+				AudioExt:    podcast.AudioExtension(audioType, audioURL),
 				PubDate:     pubDate,
 				Duration:    duration,
 			})
@@ -950,8 +954,25 @@ func loadPodcast(podcastID string) tea.Cmd {
 	}
 }
 
-func addID3Tags(filepath string, ep Episode, info PodcastInfo) error {
-	tag, err := id3v2.Open(filepath, id3v2.Options{Parse: true})
+// episodeExt returns the filename extension for an episode, defaulting to
+// ".mp3" when AudioExt was not populated (older code paths or edge cases).
+func episodeExt(ep Episode) string {
+	if ep.AudioExt == "" {
+		return ".mp3"
+	}
+	return ep.AudioExt
+}
+
+func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
+	// ID3v2 tags are an MPEG-audio convention. Writing them onto a non-MP3
+	// container (e.g. M4A/MP4) prepends bytes the container parser does not
+	// expect and corrupts the file. Skip silently for other formats; their
+	// metadata stays as whatever the publisher embedded.
+	if episodeExt(ep) != ".mp3" {
+		return nil
+	}
+
+	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 	if err != nil {
 		// Create new tag if file doesn't have one
 		tag = id3v2.NewEmptyTag()
@@ -1264,11 +1285,13 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) tea.Cmd {
 		var episodes []Episode
 		for i, item := range feed.Items {
 			audioURL := ""
+			audioType := ""
 
 			// Find audio enclosure
 			for _, enc := range item.Enclosures {
 				if strings.Contains(enc.Type, "audio") || strings.HasSuffix(enc.URL, ".mp3") {
 					audioURL = enc.URL
+					audioType = enc.Type
 					break
 				}
 			}
@@ -1292,6 +1315,7 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) tea.Cmd {
 				Title:       item.Title,
 				Description: item.Description,
 				AudioURL:    audioURL,
+				AudioExt:    podcast.AudioExtension(audioType, audioURL),
 				PubDate:     pubDate,
 				Duration:    duration,
 			})

@@ -37,6 +37,55 @@ func IsNumeric(s string) bool {
 	return len(s) > 0
 }
 
+// AudioExtension returns a file extension (with leading dot, lowercase) for
+// a podcast audio enclosure based on its MIME type and URL. The MIME type is
+// preferred when present; otherwise the URL path is inspected (query strings
+// stripped). When neither yields a recognised audio container, ".mp3" is
+// returned as a safe default — most podcasts are MPEG audio and downstream
+// code expects that extension.
+//
+// Recognising the real container matters because writing an ID3v2 tag onto a
+// non-MPEG file (e.g. M4A/MP4) prepends bytes the container parser does not
+// expect, corrupting the file.
+func AudioExtension(mimeType, url string) string {
+	mt := strings.ToLower(strings.TrimSpace(mimeType))
+	switch {
+	case strings.Contains(mt, "mpeg"), strings.Contains(mt, "mp3"):
+		return ".mp3"
+	case strings.Contains(mt, "mp4"), strings.Contains(mt, "m4a"), strings.Contains(mt, "aac"):
+		return ".m4a"
+	case strings.Contains(mt, "opus"):
+		return ".opus"
+	case strings.Contains(mt, "ogg"), strings.Contains(mt, "vorbis"):
+		return ".ogg"
+	case strings.Contains(mt, "wav"):
+		return ".wav"
+	case strings.Contains(mt, "flac"):
+		return ".flac"
+	}
+
+	u := strings.ToLower(url)
+	if i := strings.IndexAny(u, "?#"); i >= 0 {
+		u = u[:i]
+	}
+	switch {
+	case strings.HasSuffix(u, ".mp3"):
+		return ".mp3"
+	case strings.HasSuffix(u, ".m4a"), strings.HasSuffix(u, ".mp4"),
+		strings.HasSuffix(u, ".m4b"), strings.HasSuffix(u, ".aac"):
+		return ".m4a"
+	case strings.HasSuffix(u, ".opus"):
+		return ".opus"
+	case strings.HasSuffix(u, ".ogg"), strings.HasSuffix(u, ".oga"):
+		return ".ogg"
+	case strings.HasSuffix(u, ".wav"):
+		return ".wav"
+	case strings.HasSuffix(u, ".flac"):
+		return ".flac"
+	}
+	return ".mp3"
+}
+
 // SanitizeFilename removes invalid characters from a filename
 func SanitizeFilename(name string) string {
 	// Remove invalid characters
