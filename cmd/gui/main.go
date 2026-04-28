@@ -16,6 +16,8 @@ import (
 	"sync"
 	"time"
 
+	"podcastdownload/internal/podcast"
+
 	"fyne.io/fyne/v2"
 	"fyne.io/fyne/v2/app"
 	"fyne.io/fyne/v2/container"
@@ -50,6 +52,7 @@ type Episode struct {
 	Title       string
 	Description string
 	AudioURL    string
+	AudioExt    string // file extension including leading dot, e.g. ".mp3" / ".m4a"
 	PubDate     time.Time
 	Duration    string
 	Selected    bool
@@ -453,7 +456,7 @@ func (a *App) startDownload() {
 		defer func() { a.downloading = false }()
 
 		for i, ep := range selected {
-			filename := fmt.Sprintf("%03d - %s.mp3", ep.Index, sanitizeFilename(ep.Title))
+			filename := fmt.Sprintf("%03d - %s%s", ep.Index, sanitizeFilename(ep.Title), episodeExt(ep))
 			filePath := filepath.Join(outputDir, filename)
 
 			fyne.Do(func() {
@@ -626,9 +629,11 @@ func parseRSSFeedItems(items []*gofeed.Item) ([]Episode, error) {
 	var episodes []Episode
 	for i, item := range items {
 		audioURL := ""
+		audioType := ""
 		for _, enc := range item.Enclosures {
 			if strings.Contains(enc.Type, "audio") || strings.HasSuffix(enc.URL, ".mp3") {
 				audioURL = enc.URL
+				audioType = enc.Type
 				break
 			}
 		}
@@ -651,6 +656,7 @@ func parseRSSFeedItems(items []*gofeed.Item) ([]Episode, error) {
 			Title:       item.Title,
 			Description: item.Description,
 			AudioURL:    audioURL,
+			AudioExt:    podcast.AudioExtension(audioType, audioURL),
 			PubDate:     pubDate,
 			Duration:    duration,
 		})
@@ -848,8 +854,24 @@ func downloadFileWithProgress(filepath string, fileURL string, progressCallback 
 	return nil
 }
 
-func addID3Tags(filepath string, ep Episode, info PodcastInfo) error {
-	tag, err := id3v2.Open(filepath, id3v2.Options{Parse: true})
+// episodeExt returns the filename extension for an episode, defaulting to
+// ".mp3" when AudioExt was not populated.
+func episodeExt(ep Episode) string {
+	if ep.AudioExt == "" {
+		return ".mp3"
+	}
+	return ep.AudioExt
+}
+
+func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
+	// ID3v2 tags belong on MPEG audio. Writing them onto an M4A/MP4 container
+	// prepends bytes the parser does not expect and corrupts the file. Skip
+	// silently for non-MP3 formats.
+	if episodeExt(ep) != ".mp3" {
+		return nil
+	}
+
+	tag, err := id3v2.Open(filePath, id3v2.Options{Parse: true})
 	if err != nil {
 		tag = id3v2.NewEmptyTag()
 	}

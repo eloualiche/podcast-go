@@ -35,6 +35,51 @@ func TestIsNumeric(t *testing.T) {
 	}
 }
 
+func TestAudioExtension(t *testing.T) {
+	tests := []struct {
+		name     string
+		mime     string
+		url      string
+		expected string
+	}{
+		// MIME-driven (authoritative when present)
+		{"audio/mpeg", "audio/mpeg", "https://example.com/ep1", ".mp3"},
+		{"audio/mp3", "audio/mp3", "https://example.com/ep1", ".mp3"},
+		{"audio/mp4", "audio/mp4", "https://example.com/ep1", ".m4a"},
+		{"audio/x-m4a", "audio/x-m4a", "https://example.com/ep1", ".m4a"},
+		{"audio/aac", "audio/aac", "https://example.com/ep1", ".m4a"},
+		{"audio/ogg", "audio/ogg", "https://example.com/ep1", ".ogg"},
+		{"audio/opus", "audio/opus", "https://example.com/ep1", ".opus"},
+		{"audio/wav", "audio/wav", "https://example.com/ep1", ".wav"},
+		{"audio/flac", "audio/flac", "https://example.com/ep1", ".flac"},
+		{"uppercase mime", "AUDIO/MPEG", "https://example.com/ep1", ".mp3"},
+		{"mime with charset", "audio/mp4; codecs=mp4a.40.2", "https://example.com/ep1", ".m4a"},
+
+		// URL fallback when MIME absent or generic
+		{"empty mime, mp3 url", "", "https://example.com/show/ep.mp3", ".mp3"},
+		{"empty mime, m4a url", "", "https://example.com/show/ep.m4a", ".m4a"},
+		{"empty mime, mp4 url", "", "https://example.com/show/ep.mp4", ".m4a"},
+		{"empty mime, opus url", "", "https://example.com/show/ep.opus", ".opus"},
+		{"url with query string", "", "https://example.com/show/ep.m4a?t=12345&token=abc", ".m4a"},
+		{"url with fragment", "", "https://example.com/show/ep.mp3#start", ".mp3"},
+		{"uppercase url", "", "https://example.com/SHOW/EP.M4A", ".m4a"},
+
+		// Defaults
+		{"unknown mime, no ext url", "application/octet-stream", "https://example.com/track/123", ".mp3"},
+		{"both empty", "", "", ".mp3"},
+		{"mime wins over url", "audio/mp4", "https://example.com/ep.mp3", ".m4a"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			got := AudioExtension(tt.mime, tt.url)
+			if got != tt.expected {
+				t.Errorf("AudioExtension(%q, %q) = %q, want %q", tt.mime, tt.url, got, tt.expected)
+			}
+		})
+	}
+}
+
 func TestSanitizeFilename(t *testing.T) {
 	tests := []struct {
 		input    string
