@@ -484,3 +484,31 @@ func TestParseEpisodeSpec(t *testing.T) {
 		})
 	}
 }
+
+func TestAppleSearchURL(t *testing.T) {
+	tests := []struct {
+		name     string
+		query    string
+		expected string
+	}{
+		{"spaces", "the daily", "term=the+daily&"},
+		{"ampersand", "Q&A", "term=Q%26A&"},
+		{"hash", "C# weekly", "term=C%23+weekly&"},
+		{"accents", "économie", "term=%C3%A9conomie&"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := AppleSearchURL(tt.query)
+			if !strings.HasPrefix(result, "https://itunes.apple.com/search?") {
+				t.Errorf("AppleSearchURL(%q) = %q, wrong endpoint", tt.query, result)
+			}
+			if !strings.Contains(result, tt.expected) {
+				t.Errorf("AppleSearchURL(%q) = %q, want it to contain %q", tt.query, result, tt.expected)
+			}
+			if !strings.Contains(result, "media=podcast") {
+				t.Errorf("AppleSearchURL(%q) = %q, lost media=podcast", tt.query, result)
+			}
+		})
+	}
+}

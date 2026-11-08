@@ -1007,11 +1007,7 @@ func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
 // searchPodcasts searches for podcasts using Apple's Search API
 func searchPodcasts(query string) tea.Cmd {
 	return func() tea.Msg {
-		// URL encode the query
-		encodedQuery := strings.ReplaceAll(query, " ", "+")
-		url := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=25", encodedQuery)
-
-		resp, err := http.Get(url)
+		resp, err := http.Get(podcast.AppleSearchURL(query))
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to search podcasts: %w", err)}
 		}
@@ -1120,10 +1116,7 @@ func hasPodcastIndexCredentials() bool {
 
 // searchAppleResults performs Apple search and returns results directly (for use in combined search)
 func searchAppleResults(query string) ([]SearchResult, error) {
-	encodedQuery := strings.ReplaceAll(query, " ", "+")
-	url := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=25", encodedQuery)
-
-	resp, err := http.Get(url)
+	resp, err := http.Get(podcast.AppleSearchURL(query))
 	if err != nil {
 		return nil, err
 	}

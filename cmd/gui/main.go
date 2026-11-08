@@ -660,10 +660,7 @@ func parseRSSFeedItems(items []*gofeed.Item) ([]Episode, error) {
 }
 
 func searchAppleResults(query string) ([]SearchResult, error) {
-	encodedQuery := strings.ReplaceAll(query, " ", "+")
-	apiURL := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=25", encodedQuery)
-
-	resp, err := http.Get(apiURL)
+	resp, err := http.Get(podcast.AppleSearchURL(query))
 	if err != nil {
 		return nil, err
 	}

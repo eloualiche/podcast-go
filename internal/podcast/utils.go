@@ -6,6 +6,7 @@ import (
 	"html"
 	"io"
 	"net/http"
+	neturl "net/url"
 	"os"
 	"regexp"
 	"strings"
@@ -110,6 +111,11 @@ func SanitizeFilename(name string) string {
 		return "episode"
 	}
 	return name
+}
+
+// AppleSearchURL builds the iTunes Search API URL for a podcast search
+func AppleSearchURL(query string) string {
+	return "https://itunes.apple.com/search?term=" + neturl.QueryEscape(query) + "&media=podcast&limit=25"
 }
 
 // EpisodeFilename builds the filename for an episode. It is prefixed with the
