@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 )
 
 func TestIsNumeric(t *testing.T) {
@@ -117,6 +118,34 @@ func TestSanitizeFilename_LongName(t *testing.T) {
 	}
 	if len(result) != 100 {
 		t.Errorf("SanitizeFilename(%d chars) = %d chars, want 100", len(longName), len(result))
+	}
+}
+
+func TestSanitizeFilename_TruncatesOnRuneBoundary(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"2-byte rune straddles limit", strings.Repeat("a", 99) + "» suite", strings.Repeat("a", 99)},
+		{"3-byte rune straddles limit", strings.Repeat("a", 98) + "’ suite", strings.Repeat("a", 98)},
+		{"4-byte rune straddles limit", strings.Repeat("a", 97) + "🎙 suite", strings.Repeat("a", 97)},
+		{"rune ends exactly at limit", strings.Repeat("a", 98) + "» suite", strings.Repeat("a", 98) + "»"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := SanitizeFilename(tt.input)
+			if !utf8.ValidString(result) {
+				t.Errorf("SanitizeFilename(%q) = %q, not valid UTF-8", tt.input, result)
+			}
+			if result != tt.expected {
+				t.Errorf("SanitizeFilename(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+			if err := os.WriteFile(filepath.Join(t.TempDir(), result+".mp3"), nil, 0o644); err != nil {
+				t.Errorf("cannot create file from sanitized name: %v", err)
+			}
+		})
 	}
 }
 

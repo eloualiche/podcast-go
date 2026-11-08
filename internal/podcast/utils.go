@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"unicode/utf8"
 )
 
 // UserAgent is used for HTTP requests. Some podcast hosts (like Acast) block
@@ -93,9 +94,14 @@ func SanitizeFilename(name string) string {
 	name = re.ReplaceAllString(name, "")
 	name = strings.TrimSpace(name)
 
-	// Limit length
+	// Limit length, backing up to a rune boundary: a split multi-byte
+	// character is invalid UTF-8, which macOS rejects in filenames
 	if len(name) > 100 {
-		name = name[:100]
+		cut := 100
+		for cut > 0 && !utf8.RuneStart(name[cut]) {
+			cut--
+		}
+		name = name[:cut]
 	}
 
 	if name == "" {

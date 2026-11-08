@@ -10,7 +10,6 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -528,16 +527,7 @@ func hasPodcastIndexCredentials() bool {
 }
 
 func sanitizeFilename(name string) string {
-	re := regexp.MustCompile(`[<>:"/\\|?*]`)
-	name = re.ReplaceAllString(name, "")
-	name = strings.TrimSpace(name)
-	if len(name) > 100 {
-		name = name[:100]
-	}
-	if name == "" {
-		return "episode"
-	}
-	return name
+	return podcast.SanitizeFilename(name)
 }
 
 func loadPodcastByID(podcastID string) (PodcastInfo, []Episode, error) {
