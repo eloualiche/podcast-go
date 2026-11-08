@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -167,6 +168,9 @@ type model struct {
 	downloaded     []string
 	percent        float64
 	searchProvider SearchProvider
+	downloadCtx    context.Context
+	cancelDownload context.CancelFunc
+	downloadGen    int // bumped on cancel so late messages from that run are ignored
 }
 
 // Messages
@@ -187,6 +191,7 @@ type downloadProgressMsg float64
 
 type downloadCompleteMsg struct {
 	filename string
+	gen      int
 }
 
 type startDownloadMsg struct{}
@@ -281,7 +286,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case stateDownloading:
 			if msg.String() == "esc" || msg.String() == "b" {
-				// Go back to episode selection
+				// Stop the download and go back to episode selection
+				m.cancelDownload()
+				m.downloadGen++
 				m.state = stateSelecting
 				m.downloadIndex = 0
 				m.downloadTotal = 0
@@ -360,12 +367,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.downloadNextCmd()
 
 	case downloadCompleteMsg:
+		if msg.gen != m.downloadGen {
+			return m, nil
+		}
 		m.downloaded = append(m.downloaded, msg.filename)
 		m.downloadIndex++
 		m.percent = 0
 		if m.downloadIndex < m.downloadTotal {
 			return m, m.downloadNextCmd()
 		}
+		m.cancelDownload()
 		m.state = stateDone
 		return m, nil
 	}
@@ -489,6 +500,7 @@ func (m model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateDownloading
 			m.downloadTotal = len(selected)
 			m.downloadIndex = 0
+			m.downloadCtx, m.cancelDownload = context.WithCancel(context.Background())
 			podcastFolder := podcast.SanitizeFilename(m.podcastInfo.Name)
 			m.outputDir = filepath.Join(m.baseDir, podcastFolder)
 			os.MkdirAll(m.outputDir, 0755)
@@ -525,16 +537,21 @@ func (m model) downloadNextCmd() tea.Cmd {
 	currentFile := podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
 	outputDir := m.outputDir
 	podcastInfo := m.podcastInfo
+	ctx := m.downloadCtx
+	gen := m.downloadGen
 
 	return func() tea.Msg {
 		filePath := filepath.Join(outputDir, currentFile)
 
 		// Download with progress callback that sends to program
-		err := podcast.DownloadFile(filePath, ep.AudioURL, func(percent float64) {
-			if program != nil {
+		err := podcast.DownloadFile(ctx, filePath, ep.AudioURL, func(percent float64) {
+			if program != nil && ctx.Err() == nil {
 				program.Send(downloadProgressMsg(percent))
 			}
 		})
+		if ctx.Err() != nil {
+			return nil // Cancelled: the user has already moved on
+		}
 		if err != nil {
 			return errorMsg{err: err}
 		}
@@ -542,7 +559,7 @@ func (m model) downloadNextCmd() tea.Cmd {
 		// Add ID3 tags
 		addID3Tags(filePath, ep, podcastInfo)
 
-		return downloadCompleteMsg{filename: filePath}
+		return downloadCompleteMsg{filename: filePath, gen: gen}
 	}
 }
 

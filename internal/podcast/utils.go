@@ -1,6 +1,7 @@
 package podcast
 
 import (
+	"context"
 	"fmt"
 	"html"
 	"io"
@@ -20,8 +21,8 @@ const UserAgent = "PodcastDownloader/1.0"
 var httpClient = &http.Client{}
 
 // httpGet performs an HTTP GET with proper User-Agent
-func httpGet(url string) (*http.Response, error) {
-	req, err := http.NewRequest("GET", url, nil)
+func httpGet(ctx context.Context, url string) (*http.Response, error) {
+	req, err := http.NewRequestWithContext(ctx, "GET", url, nil)
 	if err != nil {
 		return nil, err
 	}
@@ -127,13 +128,14 @@ type ProgressCallback func(percent float64)
 
 // DownloadFile downloads a file from a URL with progress reporting
 // It handles text-based redirects used by some podcast hosts (like Acast)
-func DownloadFile(filepath string, url string, onProgress ProgressCallback) error {
+// Cancelling ctx stops the download and removes the unfinished file
+func DownloadFile(ctx context.Context, filepath string, url string, onProgress ProgressCallback) error {
 	// Check if already exists
 	if _, err := os.Stat(filepath); err == nil {
 		return nil
 	}
 
-	resp, err := httpGet(url)
+	resp, err := httpGet(ctx, url)
 	if err != nil {
 		return err
 	}
@@ -158,7 +160,7 @@ func DownloadFile(filepath string, url string, onProgress ProgressCallback) erro
 			redirectURL = strings.TrimSpace(redirectURL)
 			// Unescape HTML entities like &amp; -> &
 			redirectURL = html.UnescapeString(redirectURL)
-			return DownloadFile(filepath, redirectURL, onProgress)
+			return DownloadFile(ctx, filepath, redirectURL, onProgress)
 		}
 		return fmt.Errorf("expected audio, got text response: %q", bodyStr)
 	}

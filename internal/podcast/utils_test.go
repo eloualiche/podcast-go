@@ -1,6 +1,7 @@
 package podcast
 
 import (
+	"context"
 	"errors"
 	"net/http"
 	"net/http/httptest"
@@ -195,7 +196,7 @@ func TestDownloadFile_TextRedirect(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.mp3")
 
-	err := DownloadFile(tmpFile, mainServer.URL, nil)
+	err := DownloadFile(context.Background(), tmpFile, mainServer.URL, nil)
 	if err != nil {
 		t.Fatalf("DownloadFile failed: %v", err)
 	}
@@ -233,7 +234,7 @@ func TestDownloadFile_HTMLEntityDecode(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.mp3")
 
-	err := DownloadFile(tmpFile, mainServer.URL, nil)
+	err := DownloadFile(context.Background(), tmpFile, mainServer.URL, nil)
 	if err != nil {
 		t.Fatalf("DownloadFile failed: %v", err)
 	}
@@ -259,7 +260,7 @@ func TestDownloadFile_DirectDownload(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.mp3")
 
-	err := DownloadFile(tmpFile, server.URL, nil)
+	err := DownloadFile(context.Background(), tmpFile, server.URL, nil)
 	if err != nil {
 		t.Fatalf("DownloadFile failed: %v", err)
 	}
@@ -291,7 +292,7 @@ func TestDownloadFile_SkipExisting(t *testing.T) {
 		t.Fatalf("Failed to create file: %v", err)
 	}
 
-	err = DownloadFile(tmpFile, server.URL, nil)
+	err = DownloadFile(context.Background(), tmpFile, server.URL, nil)
 	if err != nil {
 		t.Fatalf("DownloadFile failed: %v", err)
 	}
@@ -330,7 +331,7 @@ func TestDownloadFile_InterruptedLeavesNoFileAndRetries(t *testing.T) {
 	tmpDir := t.TempDir()
 	tmpFile := filepath.Join(tmpDir, "test.mp3")
 
-	if err := DownloadFile(tmpFile, server.URL, nil); err == nil {
+	if err := DownloadFile(context.Background(), tmpFile, server.URL, nil); err == nil {
 		t.Fatal("DownloadFile succeeded on an interrupted download, want error")
 	}
 	entries, err := os.ReadDir(tmpDir)
@@ -341,7 +342,7 @@ func TestDownloadFile_InterruptedLeavesNoFileAndRetries(t *testing.T) {
 		t.Errorf("Interrupted download left %q behind, want empty dir", entries[0].Name())
 	}
 
-	if err := DownloadFile(tmpFile, server.URL, nil); err != nil {
+	if err := DownloadFile(context.Background(), tmpFile, server.URL, nil); err != nil {
 		t.Fatalf("Retry failed: %v", err)
 	}
 	if callCount != 2 {
@@ -365,7 +366,7 @@ func TestDownloadFile_TextBodyIsAnError(t *testing.T) {
 
 	tmpFile := filepath.Join(t.TempDir(), "test.mp3")
 
-	err := DownloadFile(tmpFile, server.URL, nil)
+	err := DownloadFile(context.Background(), tmpFile, server.URL, nil)
 	if err == nil {
 		t.Fatal("DownloadFile succeeded on a text response, want error")
 	}
@@ -374,6 +375,33 @@ func TestDownloadFile_TextBodyIsAnError(t *testing.T) {
 	}
 	if _, err := os.Stat(tmpFile); err == nil {
 		t.Error("Text response created an audio file")
+	}
+}
+
+func TestDownloadFile_CancelStopsAndCleansUp(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Length", "100")
+		w.Write([]byte(strings.Repeat("x", 50)))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	err := DownloadFile(ctx, filepath.Join(tmpDir, "test.mp3"), server.URL, func(float64) { cancel() })
+	if !errors.Is(err, context.Canceled) {
+		t.Errorf("error = %v, want context.Canceled", err)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Cancelled download left %q behind, want empty dir", entries[0].Name())
 	}
 }
 
@@ -405,7 +433,7 @@ func TestDownloadFile_ProgressCallback(t *testing.T) {
 	var lastProgress float64
 	progressCalled := false
 
-	err := DownloadFile(tmpFile, server.URL, func(percent float64) {
+	err := DownloadFile(context.Background(), tmpFile, server.URL, func(percent float64) {
 		progressCalled = true
 		lastProgress = percent
 	})
