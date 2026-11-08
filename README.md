@@ -19,8 +19,8 @@
 - **Preview metadata**: View detailed podcast/episode metadata before downloading
 - **Back navigation**: Navigate back through screens without restarting
 - **Batch downloads**: Select multiple episodes at once with visual progress tracking
-- **ID3 tagging**: Automatically writes ID3v2 tags (title, artist, album, track number)
-- **Smart file naming**: Episodes are saved with track numbers for proper ordering
+- **ID3 tagging**: Automatically writes ID3v2 tags (title, artist, album)
+- **Smart file naming**: Episodes are saved with their publish date, so names stay stable and sort chronologically
 - **Resume support**: Skips already downloaded files
 
 ## Requirements
@@ -181,7 +181,7 @@ Selected episodes are downloaded with a progress bar:
 Downloading...
 
   Episode 1 of 2
-  002 - A Landmark Lawsuit.mp3
+  2026-07-11 - A Landmark Lawsuit.mp3
 
   ████████████████████░░░░░░░░░░░░░░░░░░░░ 52%
 
@@ -194,16 +194,15 @@ Episodes are saved to a folder named after the podcast:
 
 ```
 The Daily/
-├── 001 - The Sunday Read.mp3
-├── 002 - A Landmark Lawsuit.mp3
-└── 003 - The Fight Over the Future.mp3
+├── 2026-07-10 - The Fight Over the Future.mp3
+├── 2026-07-11 - A Landmark Lawsuit.mp3
+└── 2026-07-12 - The Sunday Read.mp3
 ```
 
 Each file includes ID3 tags:
 - **Title**: Episode title
 - **Artist**: Podcast creator/network
 - **Album**: Podcast name
-- **Track**: Episode number
 
 ## Keyboard Controls
 

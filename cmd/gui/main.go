@@ -1,16 +1,17 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
 	"net/url"
 	"os"
 	"path/filepath"
-	"regexp"
 	"strconv"
 	"strings"
 	"sync"
@@ -123,6 +124,9 @@ type App struct {
 	podcastInfo    PodcastInfo
 	outputDir      string
 	downloading    bool
+
+	// openResult loads a selected search result; replaced in tests
+	openResult func(SearchResult)
 }
 
 func main() {
@@ -144,6 +148,8 @@ func (a *App) Run() {
 }
 
 func (a *App) buildUI() {
+	a.openResult = a.loadPodcast
+
 	// Search view components
 	a.searchEntry = widget.NewEntry()
 	a.searchEntry.SetPlaceHolder("Search podcasts or enter Apple Podcast ID...")
@@ -176,8 +182,11 @@ func (a *App) buildUI() {
 		},
 	)
 	a.resultsList.OnSelected = func(id widget.ListItemID) {
+		// Selecting the already selected item does nothing, so clear it to
+		// allow the same podcast to be opened again after going back
+		a.resultsList.Unselect(id)
 		if id < len(a.searchResults) {
-			a.loadPodcast(a.searchResults[id])
+			a.openResult(a.searchResults[id])
 		}
 	}
 
@@ -250,6 +259,9 @@ func (a *App) buildUI() {
 			dateLabel := rightBox.Objects[0].(*widget.Label)
 			durationLabel := rightBox.Objects[1].(*widget.Label)
 
+			// Rows are reused, and SetChecked fires OnChanged: clear the handler
+			// first so it can't write this value onto the row's previous episode
+			check.OnChanged = nil
 			check.SetChecked(ep.Selected)
 			check.OnChanged = func(checked bool) {
 				a.episodes[id].Selected = checked
@@ -257,9 +269,7 @@ func (a *App) buildUI() {
 			}
 
 			title := ep.Title
-			if len(title) > 60 {
-				title = title[:57] + "..."
-			}
+			title = podcast.Truncate(title, 60)
 			titleLabel.SetText(fmt.Sprintf("[%d] %s", ep.Index, title))
 
 			if !ep.PubDate.IsZero() {
@@ -356,7 +366,7 @@ func (a *App) doSearch() {
 		var results []SearchResult
 		var err error
 
-		if isNumeric(query) {
+		if podcast.IsPodcastID(query) {
 			// Direct podcast ID lookup
 			info, episodes, loadErr := loadPodcastByID(query)
 			if loadErr != nil {
@@ -444,19 +454,22 @@ func (a *App) startDownload() {
 		return
 	}
 
-	a.downloading = true
-	a.showDownloadView()
-
 	// Create output directory
 	podcastFolder := sanitizeFilename(a.podcastInfo.Name)
 	outputDir := filepath.Join(a.outputDir, podcastFolder)
-	os.MkdirAll(outputDir, 0755)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		a.showError("Could not create output folder", err)
+		return
+	}
+
+	a.downloading = true
+	a.showDownloadView()
 
 	go func() {
-		defer func() { a.downloading = false }()
+		var failures []string
 
 		for i, ep := range selected {
-			filename := fmt.Sprintf("%03d - %s%s", ep.Index, sanitizeFilename(ep.Title), episodeExt(ep))
+			filename := podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
 			filePath := filepath.Join(outputDir, filename)
 
 			fyne.Do(func() {
@@ -464,13 +477,14 @@ func (a *App) startDownload() {
 				a.progressBar.SetValue(0)
 			})
 
-			err := downloadFileWithProgress(filePath, ep.AudioURL, func(progress float64) {
+			err := podcast.DownloadFile(context.Background(), filePath, ep.AudioURL, func(progress float64) {
 				fyne.Do(func() {
 					a.progressBar.SetValue(progress)
 				})
 			})
 
 			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", ep.Title, err))
 				fyne.Do(func() {
 					a.statusLabel.SetText(fmt.Sprintf("Error: %v", err))
 				})
@@ -482,17 +496,30 @@ func (a *App) startDownload() {
 		}
 
 		fyne.Do(func() {
-			a.statusLabel.SetText(fmt.Sprintf("Downloaded %d episodes to %s", len(selected), outputDir))
+			a.downloading = false
+			summary := downloadSummary(len(selected), outputDir, failures)
+			a.statusLabel.SetText(summary)
 			a.progressBar.SetValue(1)
 
 			// Show completion dialog
-			dialog.ShowInformation("Download Complete",
-				fmt.Sprintf("Successfully downloaded %d episode(s) to:\n%s", len(selected), outputDir),
-				a.mainWindow)
+			if len(failures) > 0 {
+				dialog.ShowError(errors.New(summary), a.mainWindow)
+			} else {
+				dialog.ShowInformation("Download Complete", summary, a.mainWindow)
+			}
 
 			a.showEpisodeView()
 		})
 	}()
+}
+
+// downloadSummary describes the outcome of downloading total episodes
+func downloadSummary(total int, outputDir string, failures []string) string {
+	if len(failures) == 0 {
+		return fmt.Sprintf("Successfully downloaded %d episode(s) to:\n%s", total, outputDir)
+	}
+	return fmt.Sprintf("Downloaded %d of %d episode(s) to:\n%s\n\nFailed:\n%s",
+		total-len(failures), total, outputDir, strings.Join(failures, "\n"))
 }
 
 func (a *App) getSelectedEpisodes() []Episode {
@@ -512,15 +539,6 @@ func (a *App) showError(title string, err error) {
 
 // Core functions (reused from TUI)
 
-func isNumeric(s string) bool {
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return len(s) > 0
-}
-
 func hasPodcastIndexCredentials() bool {
 	apiKey := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_KEY"))
 	apiSecret := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_SECRET"))
@@ -528,23 +546,14 @@ func hasPodcastIndexCredentials() bool {
 }
 
 func sanitizeFilename(name string) string {
-	re := regexp.MustCompile(`[<>:"/\\|?*]`)
-	name = re.ReplaceAllString(name, "")
-	name = strings.TrimSpace(name)
-	if len(name) > 100 {
-		name = name[:100]
-	}
-	if name == "" {
-		return "episode"
-	}
-	return name
+	return podcast.SanitizeFilename(name)
 }
 
 func loadPodcastByID(podcastID string) (PodcastInfo, []Episode, error) {
 	podcastID = strings.TrimPrefix(strings.ToLower(podcastID), "id")
 
 	url := fmt.Sprintf("https://itunes.apple.com/lookup?id=%s&entity=podcast", podcastID)
-	resp, err := http.Get(url)
+	resp, err := podcast.MetadataClient.Get(url)
 	if err != nil {
 		return PodcastInfo{}, nil, fmt.Errorf("failed to lookup podcast: %w", err)
 	}
@@ -593,6 +602,7 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) (PodcastInfo,
 	}
 
 	fp := gofeed.NewParser()
+	fp.Client = podcast.MetadataClient
 	feed, err := fp.ParseURL(feedURL)
 	if err != nil {
 		return PodcastInfo{}, nil, fmt.Errorf("failed to parse RSS feed: %w", err)
@@ -618,6 +628,7 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) (PodcastInfo,
 
 func parseRSSFeed(feedURL string) ([]Episode, error) {
 	fp := gofeed.NewParser()
+	fp.Client = podcast.MetadataClient
 	feed, err := fp.ParseURL(feedURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse RSS feed: %w", err)
@@ -670,10 +681,7 @@ func parseRSSFeedItems(items []*gofeed.Item) ([]Episode, error) {
 }
 
 func searchAppleResults(query string) ([]SearchResult, error) {
-	encodedQuery := strings.ReplaceAll(query, " ", "+")
-	apiURL := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=25", encodedQuery)
-
-	resp, err := http.Get(apiURL)
+	resp, err := podcast.MetadataClient.Get(podcast.AppleSearchURL(query))
 	if err != nil {
 		return nil, err
 	}
@@ -806,54 +814,6 @@ func searchBoth(query string) ([]SearchResult, error) {
 	return combined, nil
 }
 
-func downloadFileWithProgress(filepath string, fileURL string, progressCallback func(float64)) error {
-	// Check if already exists
-	if _, err := os.Stat(filepath); err == nil {
-		progressCallback(1.0)
-		return nil
-	}
-
-	resp, err := http.Get(fileURL)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	out, err := os.Create(filepath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	totalSize := resp.ContentLength
-	downloaded := int64(0)
-	lastPercent := float64(0)
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-			downloaded += int64(n)
-			if totalSize > 0 {
-				percent := float64(downloaded) / float64(totalSize)
-				if percent-lastPercent >= 0.01 || percent >= 1.0 {
-					lastPercent = percent
-					progressCallback(percent)
-				}
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
-}
-
 // episodeExt returns the filename extension for an episode, defaulting to
 // ".mp3" when AudioExt was not populated.
 func episodeExt(ep Episode) string {
@@ -880,12 +840,6 @@ func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
 	tag.SetTitle(ep.Title)
 	tag.SetArtist(info.Artist)
 	tag.SetAlbum(info.Name)
-
-	trackFrame := id3v2.TextFrame{
-		Encoding: id3v2.EncodingUTF8,
-		Text:     strconv.Itoa(ep.Index),
-	}
-	tag.AddFrame(tag.CommonID("Track number/Position in set"), trackFrame)
 
 	return tag.Save()
 }

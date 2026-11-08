@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -151,6 +152,7 @@ type model struct {
 	podcastID      string
 	searchQuery    string
 	searchResults  []SearchResult
+	searchWarning  string
 	podcastInfo    PodcastInfo
 	episodes       []Episode
 	cursor         int
@@ -167,11 +169,15 @@ type model struct {
 	downloaded     []string
 	percent        float64
 	searchProvider SearchProvider
+	downloadCtx    context.Context
+	cancelDownload context.CancelFunc
+	downloadGen    int // bumped on cancel so late messages from that run are ignored
 }
 
 // Messages
 type searchResultsMsg struct {
 	results []SearchResult
+	warning string // set when one of the searched providers failed
 }
 
 type podcastLoadedMsg struct {
@@ -187,6 +193,7 @@ type downloadProgressMsg float64
 
 type downloadCompleteMsg struct {
 	filename string
+	gen      int
 }
 
 type startDownloadMsg struct{}
@@ -203,7 +210,7 @@ func initialModel(input string, baseDir string, provider SearchProvider) model {
 
 	p := progress.New(progress.WithDefaultGradient())
 
-	isID := podcast.IsNumeric(input)
+	isID := podcast.IsPodcastID(input)
 
 	m := model{
 		state:          stateLoading,
@@ -281,7 +288,9 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		case stateDownloading:
 			if msg.String() == "esc" || msg.String() == "b" {
-				// Go back to episode selection
+				// Stop the download and go back to episode selection
+				m.cancelDownload()
+				m.downloadGen++
 				m.state = stateSelecting
 				m.downloadIndex = 0
 				m.downloadTotal = 0
@@ -313,9 +322,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case searchResultsMsg:
 		m.searchResults = msg.results
+		m.searchWarning = msg.warning
 		if len(msg.results) == 0 {
 			m.state = stateError
 			m.errorMsg = fmt.Sprintf("No podcasts found for: %s", m.searchQuery)
+			if msg.warning != "" {
+				m.errorMsg += "\n\n  " + msg.warning
+			}
 			return m, nil
 		}
 		m.state = stateSearchResults
@@ -360,12 +373,16 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, m.downloadNextCmd()
 
 	case downloadCompleteMsg:
+		if msg.gen != m.downloadGen {
+			return m, nil
+		}
 		m.downloaded = append(m.downloaded, msg.filename)
 		m.downloadIndex++
 		m.percent = 0
 		if m.downloadIndex < m.downloadTotal {
 			return m, m.downloadNextCmd()
 		}
+		m.cancelDownload()
 		m.state = stateDone
 		return m, nil
 	}
@@ -489,9 +506,15 @@ func (m model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.state = stateDownloading
 			m.downloadTotal = len(selected)
 			m.downloadIndex = 0
+			m.downloadCtx, m.cancelDownload = context.WithCancel(context.Background())
 			podcastFolder := podcast.SanitizeFilename(m.podcastInfo.Name)
 			m.outputDir = filepath.Join(m.baseDir, podcastFolder)
-			os.MkdirAll(m.outputDir, 0755)
+			if err := os.MkdirAll(m.outputDir, 0755); err != nil {
+				m.cancelDownload()
+				m.state = stateError
+				m.errorMsg = fmt.Sprintf("Could not create output folder: %v", err)
+				return m, nil
+			}
 			return m, func() tea.Msg { return startDownloadMsg{} }
 		}
 
@@ -522,19 +545,24 @@ func (m model) downloadNextCmd() tea.Cmd {
 	}
 
 	ep := selected[m.downloadIndex]
-	currentFile := fmt.Sprintf("%03d - %s%s", ep.Index, podcast.SanitizeFilename(ep.Title), episodeExt(ep))
+	currentFile := podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
 	outputDir := m.outputDir
 	podcastInfo := m.podcastInfo
+	ctx := m.downloadCtx
+	gen := m.downloadGen
 
 	return func() tea.Msg {
 		filePath := filepath.Join(outputDir, currentFile)
 
 		// Download with progress callback that sends to program
-		err := podcast.DownloadFile(filePath, ep.AudioURL, func(percent float64) {
-			if program != nil {
+		err := podcast.DownloadFile(ctx, filePath, ep.AudioURL, func(percent float64) {
+			if program != nil && ctx.Err() == nil {
 				program.Send(downloadProgressMsg(percent))
 			}
 		})
+		if ctx.Err() != nil {
+			return nil // Cancelled: the user has already moved on
+		}
 		if err != nil {
 			return errorMsg{err: err}
 		}
@@ -542,7 +570,7 @@ func (m model) downloadNextCmd() tea.Cmd {
 		// Add ID3 tags
 		addID3Tags(filePath, ep, podcastInfo)
 
-		return downloadCompleteMsg{filename: filePath}
+		return downloadCompleteMsg{filename: filePath, gen: gen}
 	}
 }
 
@@ -580,6 +608,10 @@ func (m model) viewSearchResults() string {
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Search Results: \"%s\"", m.searchQuery)))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render(fmt.Sprintf("Found %d podcasts", len(m.searchResults))))
+	if m.searchWarning != "" {
+		b.WriteString("\n")
+		b.WriteString(errorStyle.Render(m.searchWarning))
+	}
 	b.WriteString("\n\n")
 
 	// Calculate visible items
@@ -603,15 +635,11 @@ func (m model) viewSearchResults() string {
 
 		// Truncate name
 		name := result.Name
-		if len(name) > 50 {
-			name = name[:47] + "..."
-		}
+		name = podcast.Truncate(name, 50)
 
 		// Truncate artist
 		artist := result.Artist
-		if len(artist) > 25 {
-			artist = artist[:22] + "..."
-		}
+		artist = podcast.Truncate(artist, 25)
 
 		line := fmt.Sprintf("%s%-50s  %s", cursor, name, dimStyle.Render(artist))
 
@@ -706,9 +734,7 @@ func (m model) viewSelecting() string {
 
 		// Truncate title
 		title := ep.Title
-		if len(title) > 45 {
-			title = title[:42] + "..."
-		}
+		title = podcast.Truncate(title, 45)
 
 		line := fmt.Sprintf("%s%s [%3d] %-45s %s  %s",
 			cursor,
@@ -778,9 +804,7 @@ func (m model) viewPreviewEpisode() string {
 		b.WriteString(fmt.Sprintf("\n  %s\n", subtitleStyle.Render("Description:")))
 		desc := ep.Description
 		// Limit description length for display
-		if len(desc) > 500 {
-			desc = desc[:497] + "..."
-		}
+		desc = podcast.Truncate(desc, 500)
 		// Simple word wrap at ~70 chars
 		words := strings.Fields(desc)
 		line := "  "
@@ -818,7 +842,7 @@ func (m model) viewDownloading() string {
 	selected := m.getSelectedEpisodes()
 	if m.downloadIndex < len(selected) {
 		ep := selected[m.downloadIndex]
-		currentFile = fmt.Sprintf("%03d - %s%s", ep.Index, podcast.SanitizeFilename(ep.Title), episodeExt(ep))
+		currentFile = podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
 	}
 
 	b.WriteString(fmt.Sprintf("  Episode %d of %d\n", m.downloadIndex+1, m.downloadTotal))
@@ -869,7 +893,7 @@ func loadPodcast(podcastID string) tea.Cmd {
 
 		// Fetch from iTunes API
 		url := fmt.Sprintf("https://itunes.apple.com/lookup?id=%s&entity=podcast", podcastID)
-		resp, err := http.Get(url)
+		resp, err := podcast.MetadataClient.Get(url)
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to lookup podcast: %w", err)}
 		}
@@ -902,6 +926,7 @@ func loadPodcast(podcastID string) tea.Cmd {
 
 		// Parse RSS feed
 		fp := gofeed.NewParser()
+		fp.Client = podcast.MetadataClient
 		feed, err := fp.ParseURL(info.FeedURL)
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to parse RSS feed: %w", err)}
@@ -983,13 +1008,6 @@ func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
 	tag.SetArtist(info.Artist)
 	tag.SetAlbum(info.Name)
 
-	// Set track number
-	trackFrame := id3v2.TextFrame{
-		Encoding: id3v2.EncodingUTF8,
-		Text:     strconv.Itoa(ep.Index),
-	}
-	tag.AddFrame(tag.CommonID("Track number/Position in set"), trackFrame)
-
 	return tag.Save()
 }
 
@@ -997,11 +1015,7 @@ func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
 // searchPodcasts searches for podcasts using Apple's Search API
 func searchPodcasts(query string) tea.Cmd {
 	return func() tea.Msg {
-		// URL encode the query
-		encodedQuery := strings.ReplaceAll(query, " ", "+")
-		url := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=25", encodedQuery)
-
-		resp, err := http.Get(url)
+		resp, err := podcast.MetadataClient.Get(podcast.AppleSearchURL(query))
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to search podcasts: %w", err)}
 		}
@@ -1110,10 +1124,7 @@ func hasPodcastIndexCredentials() bool {
 
 // searchAppleResults performs Apple search and returns results directly (for use in combined search)
 func searchAppleResults(query string) ([]SearchResult, error) {
-	encodedQuery := strings.ReplaceAll(query, " ", "+")
-	url := fmt.Sprintf("https://itunes.apple.com/search?term=%s&media=podcast&limit=25", encodedQuery)
-
-	resp, err := http.Get(url)
+	resp, err := podcast.MetadataClient.Get(podcast.AppleSearchURL(query))
 	if err != nil {
 		return nil, err
 	}
@@ -1222,36 +1233,48 @@ func searchBoth(query string) tea.Cmd {
 
 		wg.Wait()
 
-		// If both failed, return error
-		if appleErr != nil && piErr != nil {
-			return errorMsg{err: fmt.Errorf("search failed: Apple: %v, Podcast Index: %v", appleErr, piErr)}
-		}
-
-		// Combine results - Apple first, then Podcast Index (deduplicated by feed URL)
-		var combined []SearchResult
-		seenFeedURLs := make(map[string]bool)
-
-		if appleErr == nil {
-			for _, r := range appleResults {
-				normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
-				if !seenFeedURLs[normalizedURL] {
-					seenFeedURLs[normalizedURL] = true
-					combined = append(combined, r)
-				}
-			}
-		}
-		if piErr == nil {
-			for _, r := range piResults {
-				normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
-				if !seenFeedURLs[normalizedURL] {
-					seenFeedURLs[normalizedURL] = true
-					combined = append(combined, r)
-				}
-			}
-		}
-
-		return searchResultsMsg{results: combined}
+		return combineSearchResults(appleResults, appleErr, piResults, piErr)
 	}
+}
+
+// combineSearchResults merges results from both providers, Apple first and
+// deduplicated by feed URL, and warns if only one of them failed
+func combineSearchResults(appleResults []SearchResult, appleErr error, piResults []SearchResult, piErr error) tea.Msg {
+	// If both failed, return error
+	if appleErr != nil && piErr != nil {
+		return errorMsg{err: fmt.Errorf("search failed: Apple: %v, Podcast Index: %v", appleErr, piErr)}
+	}
+
+	var combined []SearchResult
+	seenFeedURLs := make(map[string]bool)
+
+	for _, r := range append(appleResults, piResults...) {
+		normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
+		if !seenFeedURLs[normalizedURL] {
+			seenFeedURLs[normalizedURL] = true
+			combined = append(combined, r)
+		}
+	}
+
+	warning := ""
+	if appleErr != nil {
+		warning = fmt.Sprintf("Apple search failed: %v", appleErr)
+	} else if piErr != nil {
+		warning = fmt.Sprintf("Podcast Index search failed: %v", piErr)
+	}
+
+	return searchResultsMsg{results: combined, warning: warning}
+}
+
+// parseProvider converts the --index flag value to a SearchProvider
+func parseProvider(value string) (SearchProvider, error) {
+	switch strings.ToLower(value) {
+	case "apple":
+		return ProviderApple, nil
+	case "podcastindex", "pi":
+		return ProviderPodcastIndex, nil
+	}
+	return "", fmt.Errorf("unknown --index value %q: use 'apple' or 'podcastindex'", value)
 }
 
 // loadPodcastFromFeed loads a podcast directly from its RSS feed URL
@@ -1266,6 +1289,7 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) tea.Cmd {
 
 		// Parse RSS feed
 		fp := gofeed.NewParser()
+		fp.Client = podcast.MetadataClient
 		feed, err := fp.ParseURL(feedURL)
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to parse RSS feed: %w", err)}
@@ -1353,12 +1377,10 @@ func main() {
 	flag.Parse()
 
 	// Parse the index flag
-	var provider SearchProvider
-	switch strings.ToLower(*indexFlag) {
-	case "podcastindex", "pi":
-		provider = ProviderPodcastIndex
-	default:
-		provider = ProviderApple
+	provider, err := parseProvider(*indexFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
 	}
 
 	// Check if we have arguments left after parsing flags (the search query)
