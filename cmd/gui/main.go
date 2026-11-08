@@ -5,6 +5,7 @@ import (
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -444,16 +445,19 @@ func (a *App) startDownload() {
 		return
 	}
 
-	a.downloading = true
-	a.showDownloadView()
-
 	// Create output directory
 	podcastFolder := sanitizeFilename(a.podcastInfo.Name)
 	outputDir := filepath.Join(a.outputDir, podcastFolder)
-	os.MkdirAll(outputDir, 0755)
+	if err := os.MkdirAll(outputDir, 0755); err != nil {
+		a.showError("Could not create output folder", err)
+		return
+	}
+
+	a.downloading = true
+	a.showDownloadView()
 
 	go func() {
-		defer func() { a.downloading = false }()
+		var failures []string
 
 		for i, ep := range selected {
 			filename := podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
@@ -471,6 +475,7 @@ func (a *App) startDownload() {
 			})
 
 			if err != nil {
+				failures = append(failures, fmt.Sprintf("%s: %v", ep.Title, err))
 				fyne.Do(func() {
 					a.statusLabel.SetText(fmt.Sprintf("Error: %v", err))
 				})
@@ -482,17 +487,30 @@ func (a *App) startDownload() {
 		}
 
 		fyne.Do(func() {
-			a.statusLabel.SetText(fmt.Sprintf("Downloaded %d episodes to %s", len(selected), outputDir))
+			a.downloading = false
+			summary := downloadSummary(len(selected), outputDir, failures)
+			a.statusLabel.SetText(summary)
 			a.progressBar.SetValue(1)
 
 			// Show completion dialog
-			dialog.ShowInformation("Download Complete",
-				fmt.Sprintf("Successfully downloaded %d episode(s) to:\n%s", len(selected), outputDir),
-				a.mainWindow)
+			if len(failures) > 0 {
+				dialog.ShowError(errors.New(summary), a.mainWindow)
+			} else {
+				dialog.ShowInformation("Download Complete", summary, a.mainWindow)
+			}
 
 			a.showEpisodeView()
 		})
 	}()
+}
+
+// downloadSummary describes the outcome of downloading total episodes
+func downloadSummary(total int, outputDir string, failures []string) string {
+	if len(failures) == 0 {
+		return fmt.Sprintf("Successfully downloaded %d episode(s) to:\n%s", total, outputDir)
+	}
+	return fmt.Sprintf("Downloaded %d of %d episode(s) to:\n%s\n\nFailed:\n%s",
+		total-len(failures), total, outputDir, strings.Join(failures, "\n"))
 }
 
 func (a *App) getSelectedEpisodes() []Episode {
