@@ -601,3 +601,31 @@ func TestDownloadFile_RedirectTargetOutlastsFirstTimer(t *testing.T) {
 		t.Errorf("Redirected download failed: %v", err)
 	}
 }
+
+func TestSanitizeFilename_UnsafeNames(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		expected string
+	}{
+		{"parent directory", "..", "episode"},
+		{"current directory", ".", "episode"},
+		{"only dots", "...", "episode"},
+		{"dots after stripping", ".:.", "episode"},
+		{"keeps inner dots", "Vol. 2...", "Vol. 2..."},
+		{"newline", "Part 1\nThe Sequel", "Part 1 The Sequel"},
+		{"tab and NUL", "A\tB\x00C", "A B C"},
+		{"terminal escape", "A\x1b[31mB", "A [31mB"},
+		{"invalid UTF-8", "caf\xe9 noir", "caf noir"},
+		{"space left by cut", strings.Repeat("a", 98) + " » suite", strings.Repeat("a", 98)},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := SanitizeFilename(tt.input)
+			if result != tt.expected {
+				t.Errorf("SanitizeFilename(%q) = %q, want %q", tt.input, result, tt.expected)
+			}
+		})
+	}
+}

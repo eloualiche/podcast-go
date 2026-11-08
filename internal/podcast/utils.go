@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"strings"
 	"time"
+	"unicode"
 	"unicode/utf8"
 )
 
@@ -105,19 +106,27 @@ func SanitizeFilename(name string) string {
 	// Remove invalid characters
 	re := regexp.MustCompile(`[<>:"/\\|?*]`)
 	name = re.ReplaceAllString(name, "")
-	name = strings.TrimSpace(name)
+	name = strings.ToValidUTF8(name, "")
+	name = strings.Map(func(r rune) rune {
+		if unicode.IsControl(r) {
+			return ' '
+		}
+		return r
+	}, name)
 
 	// Limit length, backing up to a rune boundary: a split multi-byte
 	// character is invalid UTF-8, which macOS rejects in filenames
+	name = strings.TrimSpace(name)
 	if len(name) > 100 {
 		cut := 100
 		for cut > 0 && !utf8.RuneStart(name[cut]) {
 			cut--
 		}
-		name = name[:cut]
+		name = strings.TrimSpace(name[:cut])
 	}
 
-	if name == "" {
+	// "." and ".." would resolve to an existing directory rather than a name
+	if strings.Trim(name, ".") == "" {
 		return "episode"
 	}
 	return name
