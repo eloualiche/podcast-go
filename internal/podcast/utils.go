@@ -2,6 +2,7 @@ package podcast
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"html"
 	"io"
@@ -20,6 +21,15 @@ const UserAgent = "PodcastDownloader/1.0"
 
 // httpClient is a shared HTTP client with proper User-Agent
 var httpClient = &http.Client{}
+
+// MetadataClient is for search, lookup and feed requests. Downloads use
+// stallTimeout instead, since a large episode can take much longer than this.
+var MetadataClient = &http.Client{Timeout: 60 * time.Second}
+
+// stallTimeout is how long a download may go without receiving any data
+var stallTimeout = 60 * time.Second
+
+var errDownloadStalled = errors.New("download stalled: no data received from server")
 
 // httpGet performs an HTTP GET with proper User-Agent
 func httpGet(ctx context.Context, url string) (*http.Response, error) {
@@ -141,9 +151,16 @@ func DownloadFile(ctx context.Context, filepath string, url string, onProgress P
 		return nil
 	}
 
-	resp, err := httpGet(ctx, url)
+	// Give up if no data arrives for stallTimeout. A fixed overall deadline
+	// would cut off large episodes on slow connections.
+	dlCtx, cancel := context.WithCancelCause(ctx)
+	defer cancel(nil)
+	timer := time.AfterFunc(stallTimeout, func() { cancel(errDownloadStalled) })
+	defer timer.Stop()
+
+	resp, err := httpGet(dlCtx, url)
 	if err != nil {
-		return err
+		return downloadError(dlCtx, err)
 	}
 	defer resp.Body.Close()
 
@@ -158,7 +175,7 @@ func DownloadFile(ctx context.Context, filepath string, url string, onProgress P
 		strings.Contains(resp.Header.Get("Content-Type"), "text/plain") {
 		body, err := io.ReadAll(resp.Body)
 		if err != nil {
-			return err
+			return downloadError(dlCtx, err)
 		}
 		bodyStr := string(body)
 		if strings.HasPrefix(bodyStr, "Redirecting to ") {
@@ -179,16 +196,40 @@ func DownloadFile(ctx context.Context, filepath string, url string, onProgress P
 		return err
 	}
 
-	err = copyWithProgress(out, resp.Body, resp.ContentLength, onProgress)
+	body := stallReader{resp.Body, timer}
+	err = copyWithProgress(out, body, resp.ContentLength, onProgress)
 	if closeErr := out.Close(); err == nil {
 		err = closeErr
 	}
 	if err != nil {
 		os.Remove(partPath)
-		return err
+		return downloadError(dlCtx, err)
 	}
 
 	return os.Rename(partPath, filepath)
+}
+
+// downloadError reports why ctx ended, if it did, rather than the less
+// helpful error that the interrupted request returned
+func downloadError(ctx context.Context, err error) error {
+	if cause := context.Cause(ctx); cause != nil {
+		return cause
+	}
+	return err
+}
+
+// stallReader restarts the stall timer whenever data arrives
+type stallReader struct {
+	r     io.Reader
+	timer *time.Timer
+}
+
+func (s stallReader) Read(p []byte) (int, error) {
+	n, err := s.r.Read(p)
+	if n > 0 {
+		s.timer.Reset(stallTimeout)
+	}
+	return n, err
 }
 
 // copyWithProgress copies body to out, reporting progress against totalSize

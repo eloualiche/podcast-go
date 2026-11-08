@@ -886,7 +886,7 @@ func loadPodcast(podcastID string) tea.Cmd {
 
 		// Fetch from iTunes API
 		url := fmt.Sprintf("https://itunes.apple.com/lookup?id=%s&entity=podcast", podcastID)
-		resp, err := http.Get(url)
+		resp, err := podcast.MetadataClient.Get(url)
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to lookup podcast: %w", err)}
 		}
@@ -919,6 +919,7 @@ func loadPodcast(podcastID string) tea.Cmd {
 
 		// Parse RSS feed
 		fp := gofeed.NewParser()
+		fp.Client = podcast.MetadataClient
 		feed, err := fp.ParseURL(info.FeedURL)
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to parse RSS feed: %w", err)}
@@ -1007,7 +1008,7 @@ func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
 // searchPodcasts searches for podcasts using Apple's Search API
 func searchPodcasts(query string) tea.Cmd {
 	return func() tea.Msg {
-		resp, err := http.Get(podcast.AppleSearchURL(query))
+		resp, err := podcast.MetadataClient.Get(podcast.AppleSearchURL(query))
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to search podcasts: %w", err)}
 		}
@@ -1116,7 +1117,7 @@ func hasPodcastIndexCredentials() bool {
 
 // searchAppleResults performs Apple search and returns results directly (for use in combined search)
 func searchAppleResults(query string) ([]SearchResult, error) {
-	resp, err := http.Get(podcast.AppleSearchURL(query))
+	resp, err := podcast.MetadataClient.Get(podcast.AppleSearchURL(query))
 	if err != nil {
 		return nil, err
 	}
@@ -1269,6 +1270,7 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) tea.Cmd {
 
 		// Parse RSS feed
 		fp := gofeed.NewParser()
+		fp.Client = podcast.MetadataClient
 		feed, err := fp.ParseURL(feedURL)
 		if err != nil {
 			return errorMsg{err: fmt.Errorf("failed to parse RSS feed: %w", err)}

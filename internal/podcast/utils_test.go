@@ -512,3 +512,92 @@ func TestAppleSearchURL(t *testing.T) {
 		})
 	}
 }
+
+func setStallTimeout(t *testing.T, d time.Duration) {
+	t.Helper()
+	original := stallTimeout
+	stallTimeout = d
+	t.Cleanup(func() { stallTimeout = original })
+}
+
+func TestDownloadFile_StalledBodyFails(t *testing.T) {
+	setStallTimeout(t, 50*time.Millisecond)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Length", "100")
+		w.Write([]byte(strings.Repeat("x", 50)))
+		w.(http.Flusher).Flush()
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	err := DownloadFile(context.Background(), filepath.Join(tmpDir, "test.mp3"), server.URL, nil)
+	if !errors.Is(err, errDownloadStalled) {
+		t.Errorf("error = %v, want errDownloadStalled", err)
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Stalled download left %q behind, want empty dir", entries[0].Name())
+	}
+}
+
+func TestDownloadFile_NoResponseFails(t *testing.T) {
+	setStallTimeout(t, 50*time.Millisecond)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+
+	err := DownloadFile(context.Background(), filepath.Join(t.TempDir(), "test.mp3"), server.URL, nil)
+	if !errors.Is(err, errDownloadStalled) {
+		t.Errorf("error = %v, want errDownloadStalled", err)
+	}
+}
+
+func TestDownloadFile_SlowButSteadySucceeds(t *testing.T) {
+	setStallTimeout(t, 200*time.Millisecond)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Length", "6")
+		for i := 0; i < 6; i++ {
+			w.Write([]byte("x"))
+			w.(http.Flusher).Flush()
+			time.Sleep(60 * time.Millisecond)
+		}
+	}))
+	defer server.Close()
+
+	tmpFile := filepath.Join(t.TempDir(), "test.mp3")
+	if err := DownloadFile(context.Background(), tmpFile, server.URL, nil); err != nil {
+		t.Errorf("Slow but steady download failed: %v", err)
+	}
+}
+
+func TestDownloadFile_RedirectTargetOutlastsFirstTimer(t *testing.T) {
+	setStallTimeout(t, 200*time.Millisecond)
+	target := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Length", "6")
+		for i := 0; i < 6; i++ {
+			w.Write([]byte("x"))
+			w.(http.Flusher).Flush()
+			time.Sleep(60 * time.Millisecond)
+		}
+	}))
+	defer target.Close()
+
+	redirect := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("Redirecting to " + target.URL))
+	}))
+	defer redirect.Close()
+
+	tmpFile := filepath.Join(t.TempDir(), "test.mp3")
+	if err := DownloadFile(context.Background(), tmpFile, redirect.URL, nil); err != nil {
+		t.Errorf("Redirected download failed: %v", err)
+	}
+}

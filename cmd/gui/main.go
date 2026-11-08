@@ -534,7 +534,7 @@ func loadPodcastByID(podcastID string) (PodcastInfo, []Episode, error) {
 	podcastID = strings.TrimPrefix(strings.ToLower(podcastID), "id")
 
 	url := fmt.Sprintf("https://itunes.apple.com/lookup?id=%s&entity=podcast", podcastID)
-	resp, err := http.Get(url)
+	resp, err := podcast.MetadataClient.Get(url)
 	if err != nil {
 		return PodcastInfo{}, nil, fmt.Errorf("failed to lookup podcast: %w", err)
 	}
@@ -583,6 +583,7 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) (PodcastInfo,
 	}
 
 	fp := gofeed.NewParser()
+	fp.Client = podcast.MetadataClient
 	feed, err := fp.ParseURL(feedURL)
 	if err != nil {
 		return PodcastInfo{}, nil, fmt.Errorf("failed to parse RSS feed: %w", err)
@@ -608,6 +609,7 @@ func loadPodcastFromFeed(feedURL, name, artist, artworkURL string) (PodcastInfo,
 
 func parseRSSFeed(feedURL string) ([]Episode, error) {
 	fp := gofeed.NewParser()
+	fp.Client = podcast.MetadataClient
 	feed, err := fp.ParseURL(feedURL)
 	if err != nil {
 		return nil, fmt.Errorf("failed to parse RSS feed: %w", err)
@@ -660,7 +662,7 @@ func parseRSSFeedItems(items []*gofeed.Item) ([]Episode, error) {
 }
 
 func searchAppleResults(query string) ([]SearchResult, error) {
-	resp, err := http.Get(podcast.AppleSearchURL(query))
+	resp, err := podcast.MetadataClient.Get(podcast.AppleSearchURL(query))
 	if err != nil {
 		return nil, err
 	}
