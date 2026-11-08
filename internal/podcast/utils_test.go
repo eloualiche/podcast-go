@@ -629,3 +629,27 @@ func TestSanitizeFilename_UnsafeNames(t *testing.T) {
 		})
 	}
 }
+
+func TestTruncate(t *testing.T) {
+	tests := []struct {
+		name     string
+		input    string
+		max      int
+		expected string
+	}{
+		{"short", "abc", 5, "abc"},
+		{"exact", "abcde", 5, "abcde"},
+		{"long", "abcdefgh", 5, "ab..."},
+		{"counts characters not bytes", "ééééé", 5, "ééééé"},
+		{"cuts between characters", "éééééééé", 5, "éé..."},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := Truncate(tt.input, tt.max)
+			if result != tt.expected {
+				t.Errorf("Truncate(%q, %d) = %q, want %q", tt.input, tt.max, result, tt.expected)
+			}
+		})
+	}
+}

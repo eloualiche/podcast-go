@@ -132,6 +132,14 @@ func SanitizeFilename(name string) string {
 	return name
 }
 
+// Truncate shortens s to at most max characters for display, ending in "..."
+func Truncate(s string, max int) string {
+	if utf8.RuneCountInString(s) <= max {
+		return s
+	}
+	return string([]rune(s)[:max-3]) + "..."
+}
+
 // AppleSearchURL builds the iTunes Search API URL for a podcast search
 func AppleSearchURL(query string) string {
 	return "https://itunes.apple.com/search?term=" + neturl.QueryEscape(query) + "&media=podcast&limit=25"

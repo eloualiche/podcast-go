@@ -269,9 +269,7 @@ func (a *App) buildUI() {
 			}
 
 			title := ep.Title
-			if len(title) > 60 {
-				title = title[:57] + "..."
-			}
+			title = podcast.Truncate(title, 60)
 			titleLabel.SetText(fmt.Sprintf("[%d] %s", ep.Index, title))
 
 			if !ep.PubDate.IsZero() {

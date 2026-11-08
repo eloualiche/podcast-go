@@ -620,15 +620,11 @@ func (m model) viewSearchResults() string {
 
 		// Truncate name
 		name := result.Name
-		if len(name) > 50 {
-			name = name[:47] + "..."
-		}
+		name = podcast.Truncate(name, 50)
 
 		// Truncate artist
 		artist := result.Artist
-		if len(artist) > 25 {
-			artist = artist[:22] + "..."
-		}
+		artist = podcast.Truncate(artist, 25)
 
 		line := fmt.Sprintf("%s%-50s  %s", cursor, name, dimStyle.Render(artist))
 
@@ -723,9 +719,7 @@ func (m model) viewSelecting() string {
 
 		// Truncate title
 		title := ep.Title
-		if len(title) > 45 {
-			title = title[:42] + "..."
-		}
+		title = podcast.Truncate(title, 45)
 
 		line := fmt.Sprintf("%s%s [%3d] %-45s %s  %s",
 			cursor,
@@ -795,9 +789,7 @@ func (m model) viewPreviewEpisode() string {
 		b.WriteString(fmt.Sprintf("\n  %s\n", subtitleStyle.Render("Description:")))
 		desc := ep.Description
 		// Limit description length for display
-		if len(desc) > 500 {
-			desc = desc[:497] + "..."
-		}
+		desc = podcast.Truncate(desc, 500)
 		// Simple word wrap at ~70 chars
 		words := strings.Fields(desc)
 		line := "  "
