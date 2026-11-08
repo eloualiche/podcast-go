@@ -124,6 +124,9 @@ type App struct {
 	podcastInfo    PodcastInfo
 	outputDir      string
 	downloading    bool
+
+	// openResult loads a selected search result; replaced in tests
+	openResult func(SearchResult)
 }
 
 func main() {
@@ -145,6 +148,8 @@ func (a *App) Run() {
 }
 
 func (a *App) buildUI() {
+	a.openResult = a.loadPodcast
+
 	// Search view components
 	a.searchEntry = widget.NewEntry()
 	a.searchEntry.SetPlaceHolder("Search podcasts or enter Apple Podcast ID...")
@@ -177,8 +182,11 @@ func (a *App) buildUI() {
 		},
 	)
 	a.resultsList.OnSelected = func(id widget.ListItemID) {
+		// Selecting the already selected item does nothing, so clear it to
+		// allow the same podcast to be opened again after going back
+		a.resultsList.Unselect(id)
 		if id < len(a.searchResults) {
-			a.loadPodcast(a.searchResults[id])
+			a.openResult(a.searchResults[id])
 		}
 	}
 
@@ -251,6 +259,9 @@ func (a *App) buildUI() {
 			dateLabel := rightBox.Objects[0].(*widget.Label)
 			durationLabel := rightBox.Objects[1].(*widget.Label)
 
+			// Rows are reused, and SetChecked fires OnChanged: clear the handler
+			// first so it can't write this value onto the row's previous episode
+			check.OnChanged = nil
 			check.SetChecked(ep.Selected)
 			check.OnChanged = func(checked bool) {
 				a.episodes[id].Selected = checked
