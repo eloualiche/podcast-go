@@ -8,6 +8,7 @@ import (
 	"os"
 	"regexp"
 	"strings"
+	"time"
 	"unicode/utf8"
 )
 
@@ -108,6 +109,17 @@ func SanitizeFilename(name string) string {
 		return "episode"
 	}
 	return name
+}
+
+// EpisodeFilename builds the filename for an episode. It is prefixed with the
+// publish date rather than the feed position, which shifts with every new
+// episode and would make an already downloaded file go unrecognised.
+func EpisodeFilename(pubDate time.Time, title, ext string) string {
+	name := SanitizeFilename(title) + ext
+	if pubDate.IsZero() {
+		return name
+	}
+	return pubDate.Format("2006-01-02") + " - " + name
 }
 
 // ProgressCallback is called during downloads with the current progress (0.0-1.0)

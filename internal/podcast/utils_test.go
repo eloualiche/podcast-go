@@ -8,6 +8,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 	"unicode/utf8"
 )
 
@@ -145,6 +146,32 @@ func TestSanitizeFilename_TruncatesOnRuneBoundary(t *testing.T) {
 			}
 			if err := os.WriteFile(filepath.Join(t.TempDir(), result+".mp3"), nil, 0o644); err != nil {
 				t.Errorf("cannot create file from sanitized name: %v", err)
+			}
+		})
+	}
+}
+
+func TestEpisodeFilename(t *testing.T) {
+	published := time.Date(2026, 7, 12, 18, 50, 0, 0, time.UTC)
+
+	tests := []struct {
+		name     string
+		pubDate  time.Time
+		title    string
+		ext      string
+		expected string
+	}{
+		{"dated", published, "The Sunday Read", ".mp3", "2026-07-12 - The Sunday Read.mp3"},
+		{"no date", time.Time{}, "The Sunday Read", ".mp3", "The Sunday Read.mp3"},
+		{"sanitizes title", published, "Why: A/B?", ".m4a", "2026-07-12 - Why AB.m4a"},
+		{"empty title", published, "", ".mp3", "2026-07-12 - episode.mp3"},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			result := EpisodeFilename(tt.pubDate, tt.title, tt.ext)
+			if result != tt.expected {
+				t.Errorf("EpisodeFilename(%v, %q, %q) = %q, want %q", tt.pubDate, tt.title, tt.ext, result, tt.expected)
 			}
 		})
 	}

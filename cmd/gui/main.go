@@ -455,7 +455,7 @@ func (a *App) startDownload() {
 		defer func() { a.downloading = false }()
 
 		for i, ep := range selected {
-			filename := fmt.Sprintf("%03d - %s%s", ep.Index, sanitizeFilename(ep.Title), episodeExt(ep))
+			filename := podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
 			filePath := filepath.Join(outputDir, filename)
 
 			fyne.Do(func() {
@@ -870,12 +870,6 @@ func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
 	tag.SetTitle(ep.Title)
 	tag.SetArtist(info.Artist)
 	tag.SetAlbum(info.Name)
-
-	trackFrame := id3v2.TextFrame{
-		Encoding: id3v2.EncodingUTF8,
-		Text:     strconv.Itoa(ep.Index),
-	}
-	tag.AddFrame(tag.CommonID("Track number/Position in set"), trackFrame)
 
 	return tag.Save()
 }

@@ -522,7 +522,7 @@ func (m model) downloadNextCmd() tea.Cmd {
 	}
 
 	ep := selected[m.downloadIndex]
-	currentFile := fmt.Sprintf("%03d - %s%s", ep.Index, podcast.SanitizeFilename(ep.Title), episodeExt(ep))
+	currentFile := podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
 	outputDir := m.outputDir
 	podcastInfo := m.podcastInfo
 
@@ -818,7 +818,7 @@ func (m model) viewDownloading() string {
 	selected := m.getSelectedEpisodes()
 	if m.downloadIndex < len(selected) {
 		ep := selected[m.downloadIndex]
-		currentFile = fmt.Sprintf("%03d - %s%s", ep.Index, podcast.SanitizeFilename(ep.Title), episodeExt(ep))
+		currentFile = podcast.EpisodeFilename(ep.PubDate, ep.Title, episodeExt(ep))
 	}
 
 	b.WriteString(fmt.Sprintf("  Episode %d of %d\n", m.downloadIndex+1, m.downloadTotal))
@@ -982,13 +982,6 @@ func addID3Tags(filePath string, ep Episode, info PodcastInfo) error {
 	tag.SetTitle(ep.Title)
 	tag.SetArtist(info.Artist)
 	tag.SetAlbum(info.Name)
-
-	// Set track number
-	trackFrame := id3v2.TextFrame{
-		Encoding: id3v2.EncodingUTF8,
-		Text:     strconv.Itoa(ep.Index),
-	}
-	tag.AddFrame(tag.CommonID("Track number/Position in set"), trackFrame)
 
 	return tag.Save()
 }
