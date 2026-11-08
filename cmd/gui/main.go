@@ -366,7 +366,7 @@ func (a *App) doSearch() {
 		var results []SearchResult
 		var err error
 
-		if isNumeric(query) {
+		if podcast.IsPodcastID(query) {
 			// Direct podcast ID lookup
 			info, episodes, loadErr := loadPodcastByID(query)
 			if loadErr != nil {
@@ -538,15 +538,6 @@ func (a *App) showError(title string, err error) {
 }
 
 // Core functions (reused from TUI)
-
-func isNumeric(s string) bool {
-	for _, c := range s {
-		if c < '0' || c > '9' {
-			return false
-		}
-	}
-	return len(s) > 0
-}
 
 func hasPodcastIndexCredentials() bool {
 	apiKey := strings.TrimSpace(os.Getenv("PODCASTINDEX_API_KEY"))

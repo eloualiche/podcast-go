@@ -152,6 +152,7 @@ type model struct {
 	podcastID      string
 	searchQuery    string
 	searchResults  []SearchResult
+	searchWarning  string
 	podcastInfo    PodcastInfo
 	episodes       []Episode
 	cursor         int
@@ -176,6 +177,7 @@ type model struct {
 // Messages
 type searchResultsMsg struct {
 	results []SearchResult
+	warning string // set when one of the searched providers failed
 }
 
 type podcastLoadedMsg struct {
@@ -208,7 +210,7 @@ func initialModel(input string, baseDir string, provider SearchProvider) model {
 
 	p := progress.New(progress.WithDefaultGradient())
 
-	isID := podcast.IsNumeric(input)
+	isID := podcast.IsPodcastID(input)
 
 	m := model{
 		state:          stateLoading,
@@ -320,9 +322,13 @@ func (m model) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case searchResultsMsg:
 		m.searchResults = msg.results
+		m.searchWarning = msg.warning
 		if len(msg.results) == 0 {
 			m.state = stateError
 			m.errorMsg = fmt.Sprintf("No podcasts found for: %s", m.searchQuery)
+			if msg.warning != "" {
+				m.errorMsg += "\n\n  " + msg.warning
+			}
 			return m, nil
 		}
 		m.state = stateSearchResults
@@ -503,7 +509,12 @@ func (m model) handleSelectionKeys(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.downloadCtx, m.cancelDownload = context.WithCancel(context.Background())
 			podcastFolder := podcast.SanitizeFilename(m.podcastInfo.Name)
 			m.outputDir = filepath.Join(m.baseDir, podcastFolder)
-			os.MkdirAll(m.outputDir, 0755)
+			if err := os.MkdirAll(m.outputDir, 0755); err != nil {
+				m.cancelDownload()
+				m.state = stateError
+				m.errorMsg = fmt.Sprintf("Could not create output folder: %v", err)
+				return m, nil
+			}
 			return m, func() tea.Msg { return startDownloadMsg{} }
 		}
 
@@ -597,6 +608,10 @@ func (m model) viewSearchResults() string {
 	b.WriteString(titleStyle.Render(fmt.Sprintf("Search Results: \"%s\"", m.searchQuery)))
 	b.WriteString("\n")
 	b.WriteString(subtitleStyle.Render(fmt.Sprintf("Found %d podcasts", len(m.searchResults))))
+	if m.searchWarning != "" {
+		b.WriteString("\n")
+		b.WriteString(errorStyle.Render(m.searchWarning))
+	}
 	b.WriteString("\n\n")
 
 	// Calculate visible items
@@ -1218,36 +1233,48 @@ func searchBoth(query string) tea.Cmd {
 
 		wg.Wait()
 
-		// If both failed, return error
-		if appleErr != nil && piErr != nil {
-			return errorMsg{err: fmt.Errorf("search failed: Apple: %v, Podcast Index: %v", appleErr, piErr)}
-		}
-
-		// Combine results - Apple first, then Podcast Index (deduplicated by feed URL)
-		var combined []SearchResult
-		seenFeedURLs := make(map[string]bool)
-
-		if appleErr == nil {
-			for _, r := range appleResults {
-				normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
-				if !seenFeedURLs[normalizedURL] {
-					seenFeedURLs[normalizedURL] = true
-					combined = append(combined, r)
-				}
-			}
-		}
-		if piErr == nil {
-			for _, r := range piResults {
-				normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
-				if !seenFeedURLs[normalizedURL] {
-					seenFeedURLs[normalizedURL] = true
-					combined = append(combined, r)
-				}
-			}
-		}
-
-		return searchResultsMsg{results: combined}
+		return combineSearchResults(appleResults, appleErr, piResults, piErr)
 	}
+}
+
+// combineSearchResults merges results from both providers, Apple first and
+// deduplicated by feed URL, and warns if only one of them failed
+func combineSearchResults(appleResults []SearchResult, appleErr error, piResults []SearchResult, piErr error) tea.Msg {
+	// If both failed, return error
+	if appleErr != nil && piErr != nil {
+		return errorMsg{err: fmt.Errorf("search failed: Apple: %v, Podcast Index: %v", appleErr, piErr)}
+	}
+
+	var combined []SearchResult
+	seenFeedURLs := make(map[string]bool)
+
+	for _, r := range append(appleResults, piResults...) {
+		normalizedURL := strings.ToLower(strings.TrimSuffix(r.FeedURL, "/"))
+		if !seenFeedURLs[normalizedURL] {
+			seenFeedURLs[normalizedURL] = true
+			combined = append(combined, r)
+		}
+	}
+
+	warning := ""
+	if appleErr != nil {
+		warning = fmt.Sprintf("Apple search failed: %v", appleErr)
+	} else if piErr != nil {
+		warning = fmt.Sprintf("Podcast Index search failed: %v", piErr)
+	}
+
+	return searchResultsMsg{results: combined, warning: warning}
+}
+
+// parseProvider converts the --index flag value to a SearchProvider
+func parseProvider(value string) (SearchProvider, error) {
+	switch strings.ToLower(value) {
+	case "apple":
+		return ProviderApple, nil
+	case "podcastindex", "pi":
+		return ProviderPodcastIndex, nil
+	}
+	return "", fmt.Errorf("unknown --index value %q: use 'apple' or 'podcastindex'", value)
 }
 
 // loadPodcastFromFeed loads a podcast directly from its RSS feed URL
@@ -1350,12 +1377,10 @@ func main() {
 	flag.Parse()
 
 	// Parse the index flag
-	var provider SearchProvider
-	switch strings.ToLower(*indexFlag) {
-	case "podcastindex", "pi":
-		provider = ProviderPodcastIndex
-	default:
-		provider = ProviderApple
+	provider, err := parseProvider(*indexFlag)
+	if err != nil {
+		fmt.Fprintf(os.Stderr, "Error: %v\n", err)
+		os.Exit(2)
 	}
 
 	// Check if we have arguments left after parsing flags (the search query)

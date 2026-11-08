@@ -52,6 +52,12 @@ func IsNumeric(s string) bool {
 	return len(s) > 0
 }
 
+// IsPodcastID checks if a string is an Apple podcast ID, with or without the
+// "id" prefix used in Apple Podcasts URLs
+func IsPodcastID(s string) bool {
+	return IsNumeric(strings.TrimPrefix(strings.ToLower(s), "id"))
+}
+
 // AudioExtension returns a file extension (with leading dot, lowercase) for
 // a podcast audio enclosure based on its MIME type and URL. The MIME type is
 // preferred when present; otherwise the URL path is inspected (query strings

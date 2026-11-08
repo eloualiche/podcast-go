@@ -653,3 +653,21 @@ func TestTruncate(t *testing.T) {
 		})
 	}
 }
+
+func TestIsPodcastID(t *testing.T) {
+	tests := map[string]bool{
+		"1200361736":   true,
+		"id1200361736": true,
+		"ID1200361736": true,
+		"id":           false,
+		"idea":         false,
+		"the daily":    false,
+		"":             false,
+	}
+
+	for input, expected := range tests {
+		if result := IsPodcastID(input); result != expected {
+			t.Errorf("IsPodcastID(%q) = %v, want %v", input, result, expected)
+		}
+	}
+}
