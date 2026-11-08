@@ -1,6 +1,7 @@
 package main
 
 import (
+	"context"
 	"crypto/sha1"
 	"encoding/hex"
 	"encoding/json"
@@ -463,7 +464,7 @@ func (a *App) startDownload() {
 				a.progressBar.SetValue(0)
 			})
 
-			err := downloadFileWithProgress(filePath, ep.AudioURL, func(progress float64) {
+			err := podcast.DownloadFile(context.Background(), filePath, ep.AudioURL, func(progress float64) {
 				fyne.Do(func() {
 					a.progressBar.SetValue(progress)
 				})
@@ -793,54 +794,6 @@ func searchBoth(query string) ([]SearchResult, error) {
 	}
 
 	return combined, nil
-}
-
-func downloadFileWithProgress(filepath string, fileURL string, progressCallback func(float64)) error {
-	// Check if already exists
-	if _, err := os.Stat(filepath); err == nil {
-		progressCallback(1.0)
-		return nil
-	}
-
-	resp, err := http.Get(fileURL)
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-
-	out, err := os.Create(filepath)
-	if err != nil {
-		return err
-	}
-	defer out.Close()
-
-	totalSize := resp.ContentLength
-	downloaded := int64(0)
-	lastPercent := float64(0)
-
-	buf := make([]byte, 32*1024)
-	for {
-		n, err := resp.Body.Read(buf)
-		if n > 0 {
-			out.Write(buf[:n])
-			downloaded += int64(n)
-			if totalSize > 0 {
-				percent := float64(downloaded) / float64(totalSize)
-				if percent-lastPercent >= 0.01 || percent >= 1.0 {
-					lastPercent = percent
-					progressCallback(percent)
-				}
-			}
-		}
-		if err == io.EOF {
-			break
-		}
-		if err != nil {
-			return err
-		}
-	}
-
-	return nil
 }
 
 // episodeExt returns the filename extension for an episode, defaulting to
