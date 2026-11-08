@@ -148,23 +148,41 @@ func DownloadFile(filepath string, url string, onProgress ProgressCallback) erro
 			redirectURL = html.UnescapeString(redirectURL)
 			return DownloadFile(filepath, redirectURL, onProgress)
 		}
+		return fmt.Errorf("expected audio, got text response: %q", bodyStr)
 	}
 
-	out, err := os.Create(filepath)
+	// Write to a temporary name and rename once complete, so that the skip
+	// check above never mistakes an interrupted download for a finished one
+	partPath := filepath + ".part"
+	out, err := os.Create(partPath)
 	if err != nil {
 		return err
 	}
-	defer out.Close()
 
-	totalSize := resp.ContentLength
+	err = copyWithProgress(out, resp.Body, resp.ContentLength, onProgress)
+	if closeErr := out.Close(); err == nil {
+		err = closeErr
+	}
+	if err != nil {
+		os.Remove(partPath)
+		return err
+	}
+
+	return os.Rename(partPath, filepath)
+}
+
+// copyWithProgress copies body to out, reporting progress against totalSize
+func copyWithProgress(out io.Writer, body io.Reader, totalSize int64, onProgress ProgressCallback) error {
 	downloaded := int64(0)
 	lastPercent := float64(0)
 
 	buf := make([]byte, 32*1024)
 	for {
-		n, err := resp.Body.Read(buf)
+		n, err := body.Read(buf)
 		if n > 0 {
-			out.Write(buf[:n])
+			if _, writeErr := out.Write(buf[:n]); writeErr != nil {
+				return writeErr
+			}
 			downloaded += int64(n)
 			if totalSize > 0 && onProgress != nil {
 				percent := float64(downloaded) / float64(totalSize)

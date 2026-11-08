@@ -1,6 +1,7 @@
 package podcast
 
 import (
+	"errors"
 	"net/http"
 	"net/http/httptest"
 	"os"
@@ -281,6 +282,84 @@ func TestDownloadFile_SkipExisting(t *testing.T) {
 
 	if string(content) != "original content" {
 		t.Errorf("File content = %q, want %q", string(content), "original content")
+	}
+}
+
+func TestDownloadFile_InterruptedLeavesNoFileAndRetries(t *testing.T) {
+	callCount := 0
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		callCount++
+		w.Header().Set("Content-Type", "audio/mpeg")
+		w.Header().Set("Content-Length", "13")
+		if callCount == 1 {
+			// Connection drops before the promised length is sent
+			w.Write([]byte("audio"))
+			return
+		}
+		w.Write([]byte("audio content"))
+	}))
+	defer server.Close()
+
+	tmpDir := t.TempDir()
+	tmpFile := filepath.Join(tmpDir, "test.mp3")
+
+	if err := DownloadFile(tmpFile, server.URL, nil); err == nil {
+		t.Fatal("DownloadFile succeeded on an interrupted download, want error")
+	}
+	entries, err := os.ReadDir(tmpDir)
+	if err != nil {
+		t.Fatalf("Failed to read dir: %v", err)
+	}
+	if len(entries) != 0 {
+		t.Errorf("Interrupted download left %q behind, want empty dir", entries[0].Name())
+	}
+
+	if err := DownloadFile(tmpFile, server.URL, nil); err != nil {
+		t.Fatalf("Retry failed: %v", err)
+	}
+	if callCount != 2 {
+		t.Errorf("Server was called %d times, want 2 (retry should download again)", callCount)
+	}
+	content, err := os.ReadFile(tmpFile)
+	if err != nil {
+		t.Fatalf("Failed to read file: %v", err)
+	}
+	if string(content) != "audio content" {
+		t.Errorf("File content = %q, want %q", string(content), "audio content")
+	}
+}
+
+func TestDownloadFile_TextBodyIsAnError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "text/plain")
+		w.Write([]byte("not found"))
+	}))
+	defer server.Close()
+
+	tmpFile := filepath.Join(t.TempDir(), "test.mp3")
+
+	err := DownloadFile(tmpFile, server.URL, nil)
+	if err == nil {
+		t.Fatal("DownloadFile succeeded on a text response, want error")
+	}
+	if !strings.Contains(err.Error(), "not found") {
+		t.Errorf("Error %q should include the response text", err)
+	}
+	if _, err := os.Stat(tmpFile); err == nil {
+		t.Error("Text response created an audio file")
+	}
+}
+
+type failingWriter struct{ err error }
+
+func (w failingWriter) Write(p []byte) (int, error) { return 0, w.err }
+
+func TestCopyWithProgress_ReportsWriteError(t *testing.T) {
+	diskFull := errors.New("no space left on device")
+
+	err := copyWithProgress(failingWriter{diskFull}, strings.NewReader("audio"), 5, nil)
+	if !errors.Is(err, diskFull) {
+		t.Errorf("copyWithProgress error = %v, want %v", err, diskFull)
 	}
 }
 
