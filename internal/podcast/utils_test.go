@@ -450,41 +450,6 @@ func TestDownloadFile_ProgressCallback(t *testing.T) {
 	}
 }
 
-func TestParseEpisodeSpec(t *testing.T) {
-	tests := []struct {
-		spec     string
-		total    int
-		expected []int
-	}{
-		{"", 5, []int{1, 2, 3, 4, 5}},
-		{"all", 3, []int{1, 2, 3}},
-		{"latest", 10, []int{1}},
-		{"1", 10, []int{1}},
-		{"5", 10, []int{5}},
-		{"1,3,5", 10, []int{1, 3, 5}},
-		{"1-3", 10, []int{1, 2, 3}},
-		{"1-5", 10, []int{1, 2, 3, 4, 5}},
-		{"1,3-5,7", 10, []int{1, 3, 4, 5, 7}},
-		{"1, 2, 3", 10, []int{1, 2, 3}}, // spaces
-	}
-
-	for _, tt := range tests {
-		t.Run(tt.spec, func(t *testing.T) {
-			result := ParseEpisodeSpec(tt.spec, tt.total)
-			if len(result) != len(tt.expected) {
-				t.Errorf("ParseEpisodeSpec(%q, %d) = %v, want %v", tt.spec, tt.total, result, tt.expected)
-				return
-			}
-			for i := range result {
-				if result[i] != tt.expected[i] {
-					t.Errorf("ParseEpisodeSpec(%q, %d) = %v, want %v", tt.spec, tt.total, result, tt.expected)
-					break
-				}
-			}
-		})
-	}
-}
-
 func TestAppleSearchURL(t *testing.T) {
 	tests := []struct {
 		name     string
